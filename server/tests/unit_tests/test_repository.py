@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 
 from data.database import Database
 from data.repository import IoTRepository, hash_passkey
-from core.models import SensorReading, ConfigCommand
+from core.models import SensorReading, SensorSnapshot, ConfigCommand
 
 
 class TestIoTRepository(unittest.TestCase):
@@ -65,19 +65,42 @@ class TestIoTRepository(unittest.TestCase):
         self.assertTrue(self.repo.user_owns_controller(self.passkey_hash, "MC01"))
         self.assertFalse(self.repo.user_owns_controller(self.passkey_hash, "MC99"))
 
-    def test_reading_insertion_and_user_fetch(self):
+    def test_snapshot_insertion_and_user_fetch(self):
+        """Chemin principal : un snapshot multi-capteurs = une ligne."""
         self.repo.register_user(self.passkey_hash)
         self.repo.add_user_controller(self.passkey_hash, "MC01")
-        self._add_reading("MC01", "TEMP", 25.5)
-        self._add_reading("MC01", "HUM", 40.0)
-        # A reading from an unowned controller should not be returned
-        self._add_reading("MC99", "TEMP", 99.9)
+        self.repo.insert_snapshot(SensorSnapshot(
+            controller_id="MC01", temperature=25.5, humidity=40.0, pressure=999.0
+        ))
+        # Snapshot d'un controller non-possede, ne doit pas remonter.
+        self.repo.insert_snapshot(SensorSnapshot(
+            controller_id="MC99", temperature=99.9
+        ))
 
         results = self.repo.get_latest_readings_for_user(self.passkey_hash)
-        self.assertEqual(len(results), 2)
         sensors = {row[1]: row[2] for row in results}
-        self.assertEqual(sensors["TEMP"], 25.5)
-        self.assertEqual(sensors["HUM"], 40.0)
+        self.assertEqual(sensors.get("T"), 25.5)
+        self.assertEqual(sensors.get("H"), 40.0)
+        self.assertEqual(sensors.get("P"), 999.0)
+        self.assertNotIn("L", sensors)    # champ non fourni = pas de ligne
+
+    def test_history_preserves_fragments(self):
+        """Chaque insert_snapshot cree une ligne, history les renvoie toutes."""
+        self.repo.register_user(self.passkey_hash)
+        self.repo.add_user_controller(self.passkey_hash, "MC01")
+        self.repo.insert_snapshot(SensorSnapshot(
+            controller_id="MC01", temperature=20.0
+        ))
+        self.repo.insert_snapshot(SensorSnapshot(
+            controller_id="MC01", temperature=21.5, humidity=45.0
+        ))
+        history = self.repo.get_history_for_controller(
+            self.passkey_hash, "MC01", limit=10
+        )
+        self.assertEqual(len(history), 2)
+        # Plus recent d'abord.
+        self.assertEqual(history[0][1], 21.5)
+        self.assertEqual(history[1][1], 20.0)
 
     def test_readings_per_controller(self):
         self.repo.register_user(self.passkey_hash)

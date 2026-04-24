@@ -7,7 +7,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 from protocol.codec import ProtocolCodec
 from protocol.events import (
     RegisterUserEvent, AddControllerEvent, RemoveControllerEvent,
-    ListControllersEvent, DataRequestEvent, ConfigCommandEvent, SensorReadingEvent
+    ListControllersEvent, DataRequestEvent, HistoryRequestEvent,
+    ConfigCommandEvent, SensorReadingEvent, SensorSnapshotEvent,
 )
 from core.models import SensorReading, ConfigCommand
 
@@ -92,31 +93,44 @@ class TestProtocolCodec(unittest.TestCase):
 
     # ---- decode_json_sensor_batch ----
 
-    def test_json_batch_uses_default_controller(self):
+    def test_decode_history_request(self):
+        event = ProtocolCodec.decode("HISTORY,pass123,MC01,100")
+        self.assertIsInstance(event, HistoryRequestEvent)
+        self.assertEqual(event.controller_id, "MC01")
+        self.assertEqual(event.limit, 100)
+
+        event2 = ProtocolCodec.decode("HISTORY,pass123,MC01")
+        self.assertIsInstance(event2, HistoryRequestEvent)
+        self.assertEqual(event2.limit, 50)  # defaut
+
+    def test_json_batch_produces_single_snapshot(self):
         events = ProtocolCodec.decode_json_sensor_batch(
             '{"T":25.3, "H":42, "P":999}', default_controller_id="17"
         )
-        self.assertEqual(len(events), 3)
-        by_sensor = {e.reading.sensor_id: e.reading for e in events}
-        self.assertEqual(by_sensor["T"].value, 25.3)
-        self.assertEqual(by_sensor["H"].value, 42.0)
-        self.assertEqual(by_sensor["P"].value, 999.0)
-        for e in events:
-            self.assertEqual(e.reading.controller_id, "17")
+        self.assertEqual(len(events), 1)
+        self.assertIsInstance(events[0], SensorSnapshotEvent)
+        snap = events[0].snapshot
+        self.assertEqual(snap.controller_id, "17")
+        self.assertEqual(snap.temperature, 25.3)
+        self.assertEqual(snap.humidity, 42.0)
+        self.assertIsNone(snap.luminosity)
+        self.assertEqual(snap.pressure, 999.0)
 
     def test_json_batch_id_override(self):
         events = ProtocolCodec.decode_json_sensor_batch(
             '{"id":"42", "T":20.0}', default_controller_id="default"
         )
         self.assertEqual(len(events), 1)
-        self.assertEqual(events[0].reading.controller_id, "42")
+        self.assertEqual(events[0].snapshot.controller_id, "42")
 
     def test_json_batch_ignores_unknown_keys(self):
         events = ProtocolCodec.decode_json_sensor_batch(
             '{"T":25, "UNKNOWN":99, "H":42}', default_controller_id="17"
         )
-        keys = {e.reading.sensor_id for e in events}
-        self.assertEqual(keys, {"T", "H"})
+        self.assertEqual(len(events), 1)
+        snap = events[0].snapshot
+        self.assertEqual(snap.temperature, 25.0)
+        self.assertEqual(snap.humidity, 42.0)
 
     def test_json_batch_invalid_json(self):
         self.assertEqual(
@@ -128,8 +142,10 @@ class TestProtocolCodec(unittest.TestCase):
         events = ProtocolCodec.decode_json_sensor_batch(
             '{"T":"abc", "H":42}', default_controller_id="17"
         )
-        keys = {e.reading.sensor_id for e in events}
-        self.assertEqual(keys, {"H"})
+        self.assertEqual(len(events), 1)
+        snap = events[0].snapshot
+        self.assertIsNone(snap.temperature)
+        self.assertEqual(snap.humidity, 42.0)
 
     # ---- AES-128-CBC + hex encryption ----
 
@@ -180,15 +196,22 @@ class TestProtocolCodec(unittest.TestCase):
 
     def test_pipe_payload_basic(self):
         events = ProtocolCodec.decode_pipe_payload("ABC|T:25.3,H:42,P:999")
-        self.assertEqual(len(events), 3)
-        self.assertTrue(all(e.reading.controller_id == "ABC" for e in events))
-        values = {e.reading.sensor_id: e.reading.value for e in events}
-        self.assertEqual(values, {"T": 25.3, "H": 42.0, "P": 999.0})
+        self.assertEqual(len(events), 1)
+        self.assertIsInstance(events[0], SensorSnapshotEvent)
+        snap = events[0].snapshot
+        self.assertEqual(snap.controller_id, "ABC")
+        self.assertEqual(snap.temperature, 25.3)
+        self.assertEqual(snap.humidity, 42.0)
+        self.assertIsNone(snap.luminosity)
+        self.assertEqual(snap.pressure, 999.0)
 
     def test_pipe_payload_ignores_unknown(self):
         events = ProtocolCodec.decode_pipe_payload("X|T:1.0,FOO:2,L:300")
-        keys = {e.reading.sensor_id for e in events}
-        self.assertEqual(keys, {"T", "L"})
+        self.assertEqual(len(events), 1)
+        snap = events[0].snapshot
+        self.assertEqual(snap.temperature, 1.0)
+        self.assertEqual(snap.luminosity, 300.0)
+        self.assertIsNone(snap.humidity)
 
     def test_pipe_payload_no_pipe(self):
         self.assertEqual(ProtocolCodec.decode_pipe_payload("T:25.3,H:42"), [])

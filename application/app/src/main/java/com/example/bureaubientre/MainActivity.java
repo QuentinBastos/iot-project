@@ -69,6 +69,12 @@ public class MainActivity extends AppCompatActivity {
     private TextView textLastUpdate;
     private MaterialButton buttonGetData;
 
+    // History views
+    private MaterialButton buttonLoadHistory;
+    private TextView textHistory, textHistoryHint;
+
+    private static final int HISTORY_LIMIT = 50;
+
     // State
     private final StringBuilder displayOrder = new StringBuilder();
     /** Letter -> full human-readable label, ordered like the spinner. */
@@ -138,6 +144,11 @@ public class MainActivity extends AppCompatActivity {
         textPressure = findViewById(R.id.textPressure);
         textLastUpdate = findViewById(R.id.textLastUpdate);
         buttonGetData = findViewById(R.id.buttonGetData);
+
+        buttonLoadHistory = findViewById(R.id.buttonLoadHistory);
+        textHistory = findViewById(R.id.textHistory);
+        textHistoryHint = findViewById(R.id.textHistoryHint);
+        textHistoryHint.setText(getString(R.string.history_limit_hint, HISTORY_LIMIT));
     }
 
     private void setupSensorSpinner() {
@@ -181,6 +192,7 @@ public class MainActivity extends AppCompatActivity {
         buttonAddController.setOnClickListener(v -> addController());
         buttonRemoveController.setOnClickListener(v -> removeController());
         buttonRefreshControllers.setOnClickListener(v -> refreshControllers());
+        buttonLoadHistory.setOnClickListener(v -> requestHistory());
     }
 
     private void addSelectedSensorToOrder() {
@@ -495,6 +507,80 @@ public class MainActivity extends AppCompatActivity {
 
         String time = new SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(new Date());
         textLastUpdate.setText(getString(R.string.last_update, time));
+    }
+
+    // ---- Historique --------------------------------------------------------
+
+    private void requestHistory() {
+        if (udpClient == null) {
+            showSnackbar(getString(R.string.error_no_server));
+            return;
+        }
+        if (passkey.isEmpty()) {
+            showSnackbar(getString(R.string.error_no_passkey));
+            return;
+        }
+        String selected = selectedController();
+        if (selected == null) {
+            showSnackbar(getString(R.string.error_no_controller_selected));
+            return;
+        }
+
+        String req = "HISTORY," + passkey + "," + selected + "," + HISTORY_LIMIT;
+        udpClient.sendAndReceive(req, new UdpClient.DataCallback() {
+            @Override
+            public void onDataReceived(String data) {
+                String trimmed = data.trim();
+                if (trimmed.startsWith("UNAUTHORIZED") || trimmed.startsWith("ERROR")
+                        || trimmed.startsWith("No data")) {
+                    textHistory.setText(trimmed);
+                    return;
+                }
+                textHistory.setText(formatHistoryLines(trimmed));
+            }
+
+            @Override
+            public void onError(String error) {
+                showSnackbar(getString(R.string.error_send_failed, error));
+            }
+        });
+    }
+
+    /** Serveur: "timestamp,T,H,L,P\n..." -> colonnes alignees en monospace. */
+    private String formatHistoryLines(String raw) {
+        String[] lines = raw.split("\\r?\\n");
+        if (lines.length == 0) return getString(R.string.history_empty);
+
+        StringBuilder sb = new StringBuilder(getString(R.string.history_header))
+                .append('\n');
+        for (String line : lines) {
+            String[] parts = line.split(",", -1);
+            if (parts.length < 5) continue;
+            // Raccourci timestamp : garder "HH:MM:SS" (on coupe la date + ms).
+            String ts = parts[0];
+            int spaceIdx = ts.indexOf(' ');
+            if (spaceIdx >= 0) ts = ts.substring(spaceIdx + 1);
+            int dotIdx = ts.indexOf('.');
+            if (dotIdx >= 0) ts = ts.substring(0, dotIdx);
+
+            sb.append(String.format(Locale.getDefault(), "%-8s %5s %5s %5s %5s%n",
+                    ts,
+                    shortNum(parts[1]),
+                    shortNum(parts[2]),
+                    shortNum(parts[3]),
+                    shortNum(parts[4])));
+        }
+        return sb.length() == 0 ? getString(R.string.history_empty) : sb.toString();
+    }
+
+    private String shortNum(String raw) {
+        if (raw == null || raw.isEmpty()) return "--";
+        try {
+            float f = Float.parseFloat(raw);
+            return String.format(Locale.getDefault(), "%.1f", f);
+        } catch (NumberFormatException e) {
+            return raw;
+        }
     }
 
     private void clearSensorValues() {

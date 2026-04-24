@@ -10,10 +10,11 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 from data.database import Database
 from data.repository import IoTRepository
 from core.service import ServerService
-from core.models import SensorReading, ConfigCommand
+from core.models import SensorReading, SensorSnapshot, ConfigCommand
 from protocol.events import (
     RegisterUserEvent, AddControllerEvent, RemoveControllerEvent,
-    ListControllersEvent, DataRequestEvent, ConfigCommandEvent, SensorReadingEvent
+    ListControllersEvent, DataRequestEvent, HistoryRequestEvent,
+    ConfigCommandEvent, SensorReadingEvent, SensorSnapshotEvent,
 )
 
 class TestServerServiceIntegration(unittest.TestCase):
@@ -48,26 +49,30 @@ class TestServerServiceIntegration(unittest.TestCase):
         ))
         self.assertEqual(resp, "OK")
 
-        reading = SensorReading(controller_id=self.controller_id, sensor_id="TEMP", value=22.5)
-        self.service.handle_event(SensorReadingEvent(reading=reading))
+        # Le nouveau chemin principal : un snapshot multi-capteurs.
+        self.service.handle_event(SensorSnapshotEvent(snapshot=SensorSnapshot(
+            controller_id=self.controller_id, temperature=22.5, humidity=44.0
+        )))
 
+        # La reponse GET est explosee en 1 ligne par capteur (compat app).
         resp = self.service.handle_event(DataRequestEvent(passkey=self.passkey))
-        self.assertIn("MC01,TEMP,22.5", resp)
+        self.assertIn(f"{self.controller_id},T,22.5", resp)
+        self.assertIn(f"{self.controller_id},H,44.0", resp)
 
     def test_data_request_filtered_by_controller(self):
         self._register_and_claim("MC01")
         self._register_and_claim("MC02")
-        self.service.handle_event(SensorReadingEvent(
-            reading=SensorReading(controller_id="MC01", sensor_id="TEMP", value=20.0)
+        self.service.handle_event(SensorSnapshotEvent(
+            snapshot=SensorSnapshot(controller_id="MC01", temperature=20.0)
         ))
-        self.service.handle_event(SensorReadingEvent(
-            reading=SensorReading(controller_id="MC02", sensor_id="TEMP", value=30.0)
+        self.service.handle_event(SensorSnapshotEvent(
+            snapshot=SensorSnapshot(controller_id="MC02", temperature=30.0)
         ))
 
         resp = self.service.handle_event(
             DataRequestEvent(passkey=self.passkey, controller_id="MC01")
         )
-        self.assertIn("MC01,TEMP,20.0", resp)
+        self.assertIn("MC01,T,20.0", resp)
         self.assertNotIn("MC02", resp)
 
     def test_data_request_unauthorized_controller(self):
@@ -130,6 +135,33 @@ class TestServerServiceIntegration(unittest.TestCase):
 
         self.assertEqual(self.repo.get_configuration("MC01"), "TLH")
         mock_sender.assert_called_with("MC01,CONFIG,TLH")
+
+    def test_history_request_returns_snapshots(self):
+        self._register_and_claim("MC01")
+        self.service.handle_event(SensorSnapshotEvent(
+            snapshot=SensorSnapshot(controller_id="MC01", temperature=20.0, humidity=40.0)
+        ))
+        self.service.handle_event(SensorSnapshotEvent(
+            snapshot=SensorSnapshot(controller_id="MC01", temperature=21.5, humidity=41.0,
+                                    luminosity=300.0, pressure=1013.0)
+        ))
+
+        resp = self.service.handle_event(HistoryRequestEvent(
+            passkey=self.passkey, controller_id="MC01", limit=10,
+        ))
+        lines = resp.split("\n")
+        self.assertEqual(len(lines), 2)
+        # Plus recent d'abord.
+        self.assertIn("21.5", lines[0])
+        self.assertIn("1013.0", lines[0])
+        self.assertIn("20.0", lines[1])
+
+    def test_history_request_unauthorized(self):
+        self.service.handle_event(RegisterUserEvent(passkey=self.passkey))
+        resp = self.service.handle_event(HistoryRequestEvent(
+            passkey=self.passkey, controller_id="NOT_MINE",
+        ))
+        self.assertEqual(resp, "UNAUTHORIZED")
 
     def test_timestamp_validation(self):
         self.service.handle_event(RegisterUserEvent(passkey=self.passkey))

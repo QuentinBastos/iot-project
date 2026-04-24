@@ -2,12 +2,13 @@ import logging
 import math
 import time
 from typing import Optional, Callable
-from core.models import SensorReading, ConfigCommand
+from core.models import SensorReading, SensorSnapshot, ConfigCommand
 from data.repository import IoTRepository, hash_passkey
 from protocol.events import (
     AppEvent, RegisterUserEvent, AddControllerEvent,
     RemoveControllerEvent, ListControllersEvent,
-    DataRequestEvent, ConfigCommandEvent, SensorReadingEvent
+    DataRequestEvent, HistoryRequestEvent,
+    ConfigCommandEvent, SensorReadingEvent, SensorSnapshotEvent,
 )
 
 logger = logging.getLogger("ServerService")
@@ -44,8 +45,12 @@ class ServerService:
                 return self._handle_list_controllers(passkey)
             case DataRequestEvent(passkey, controller_id, timestamp):
                 return self._handle_data_request(passkey, controller_id, timestamp)
+            case HistoryRequestEvent(passkey, controller_id, limit):
+                return self._handle_history_request(passkey, controller_id, limit)
             case ConfigCommandEvent(config):
                 return self._handle_config_command(config)
+            case SensorSnapshotEvent(snapshot):
+                return self._handle_sensor_snapshot(snapshot)
             case SensorReadingEvent(reading):
                 return self._handle_sensor_reading(reading)
             case _:
@@ -64,6 +69,38 @@ class ServerService:
             logger.info(f"Data Stored: {reading.controller_id}/{reading.sensor_id}: {reading.value}")
         except (ValueError, TypeError):
             logger.warning(f"Invalid sensor value: {reading.value}")
+
+    def _handle_sensor_snapshot(self, snapshot: SensorSnapshot) -> None:
+        """Stocke un snapshot multi-capteurs en une seule ligne dans ``readings``."""
+        # Rejet defensif : si tous les champs capteurs sont incoherents, on ne
+        # stocke rien (evite de polluer la table avec des lignes 100% NULL).
+        def _clean(v):
+            if v is None:
+                return None
+            if math.isnan(v) or math.isinf(v) or abs(v) > 1_000_000:
+                return None
+            return v
+
+        cleaned = SensorSnapshot(
+            controller_id=snapshot.controller_id,
+            temperature=_clean(snapshot.temperature),
+            humidity=_clean(snapshot.humidity),
+            luminosity=_clean(snapshot.luminosity),
+            pressure=_clean(snapshot.pressure),
+            timestamp=snapshot.timestamp,
+        )
+        if all(v is None for v in (cleaned.temperature, cleaned.humidity,
+                                   cleaned.luminosity, cleaned.pressure)):
+            logger.warning(
+                f"Snapshot all-null for {snapshot.controller_id}, dropped")
+            return
+
+        self.repository.insert_snapshot(cleaned)
+        logger.info(
+            f"Snapshot stored: {cleaned.controller_id} "
+            f"T={cleaned.temperature} H={cleaned.humidity} "
+            f"L={cleaned.luminosity} P={cleaned.pressure}"
+        )
 
     def _handle_config_command(self, config: ConfigCommand) -> None:
         clean_order = config.display_order.strip()
@@ -150,6 +187,32 @@ class ServerService:
             return "No data available"
 
         return "\n".join(f"{r[0]},{r[1]},{r[2]}" for r in readings)
+
+    def _handle_history_request(self, passkey: str, controller_id: str,
+                                limit: int) -> str:
+        if not controller_id:
+            return "ERROR: Missing controller_id"
+        h = hash_passkey(passkey)
+        if not self.repository.is_user_valid(h):
+            return "UNAUTHORIZED"
+
+        rows = self.repository.get_history_for_controller(h, controller_id, limit)
+        if rows is None:
+            return "UNAUTHORIZED"
+        if not rows:
+            return "No data available"
+
+        # Format : une ligne par snapshot, plus recent d'abord.
+        #   timestamp,temperature,humidity,luminosity,pressure
+        # Les champs absents sont rendus comme chaine vide.
+        def _fmt(v):
+            return "" if v is None else f"{v}"
+
+        lines = [
+            f"{row[5]},{_fmt(row[1])},{_fmt(row[2])},{_fmt(row[3])},{_fmt(row[4])}"
+            for row in rows
+        ]
+        return "\n".join(lines)
 
     def _is_timestamp_valid(self, ts: int) -> bool:
         return abs(time.time() - ts) <= 10

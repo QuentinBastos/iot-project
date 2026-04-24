@@ -7,12 +7,24 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.padding import PKCS7
 from cryptography.hazmat.backends import default_backend
 
-from core.models import SensorReading, ConfigCommand
+from core.models import SensorReading, SensorSnapshot, ConfigCommand
 from .events import (
     AppEvent, RegisterUserEvent, AddControllerEvent,
     RemoveControllerEvent, ListControllersEvent,
-    DataRequestEvent, ConfigCommandEvent, SensorReadingEvent
+    DataRequestEvent, HistoryRequestEvent,
+    ConfigCommandEvent, SensorReadingEvent, SensorSnapshotEvent,
 )
+
+# Mapping nom-court / nom-long / nom-long fr -> colonne du SensorSnapshot.
+_SENSOR_FIELD = {
+    "T": "temperature", "TEMP": "temperature", "TEMPERATURE": "temperature",
+    "H": "humidity",    "HUM": "humidity",     "HUMID": "humidity",
+    "HUMIDITY": "humidity", "HUMIDITE": "humidity",
+    "L": "luminosity",  "LUM": "luminosity",   "LUMIN": "luminosity",
+    "LUMINOSITY": "luminosity", "LUMINOSITE": "luminosity",
+    "P": "pressure",    "PRES": "pressure",    "PRESSURE": "pressure",
+    "PRESSION": "pressure",
+}
 
 logger = logging.getLogger("ProtocolCodec")
 
@@ -98,6 +110,18 @@ class ProtocolCodec:
                 case ["LIST", passkey]:
                     return ListControllersEvent(passkey=passkey)
 
+                case ["HISTORY", passkey, controller_id, limit]:
+                    return HistoryRequestEvent(
+                        passkey=passkey,
+                        controller_id=controller_id,
+                        limit=int(limit),
+                    )
+
+                case ["HISTORY", passkey, controller_id]:
+                    return HistoryRequestEvent(
+                        passkey=passkey, controller_id=controller_id
+                    )
+
                 case ["GET", passkey, controller_id, timestamp]:
                     return DataRequestEvent(
                         passkey=passkey,
@@ -136,15 +160,14 @@ class ProtocolCodec:
             return None
 
     @staticmethod
-    def decode_json_sensor_batch(raw: str, default_controller_id: str) -> List[SensorReadingEvent]:
+    def decode_json_sensor_batch(raw: str, default_controller_id: str) -> List[SensorSnapshotEvent]:
         """Parse un payload JSON multi-capteurs emis par le micro:bit objet.
 
         Format attendu (cles optionnelles) :
             {"T":25.3, "H":42, "L":300, "P":1013}
             {"id":"17", "T":25.3, "H":42}
 
-        L'attribution se fait via la cle "id" si presente, sinon via
-        ``default_controller_id`` passe par la couche serie.
+        Retourne une liste contenant **un seul** SensorSnapshotEvent (ou vide).
         """
         raw = raw.strip()
         if not raw.startswith("{"):
@@ -161,23 +184,21 @@ class ProtocolCodec:
         if not controller_id:
             return []
 
-        events: List[SensorReadingEvent] = []
+        fields = {}
         for key, value in data.items():
-            if key not in _JSON_SENSOR_KEYS:
+            field = _SENSOR_FIELD.get(key.upper()) if isinstance(key, str) else None
+            if field is None:
                 continue
             try:
-                f_value = float(value)
+                fields[field] = float(value)
             except (TypeError, ValueError):
                 logger.debug(f"Skipping non-numeric JSON value for {key}: {value!r}")
-                continue
-            events.append(SensorReadingEvent(
-                reading=SensorReading(
-                    controller_id=controller_id,
-                    sensor_id=key,
-                    value=f_value,
-                )
-            ))
-        return events
+
+        if not fields:
+            return []
+        return [SensorSnapshotEvent(
+            snapshot=SensorSnapshot(controller_id=controller_id, **fields)
+        )]
 
     @staticmethod
     def decrypt_aes_cbc_hex(hex_str: str, key: bytes) -> Optional[str]:
@@ -248,10 +269,10 @@ class ProtocolCodec:
         return (iv + ciphertext).hex().upper()
 
     @staticmethod
-    def decode_pipe_payload(raw: str) -> List[SensorReadingEvent]:
+    def decode_pipe_payload(raw: str) -> List[SensorSnapshotEvent]:
         """Parse le format envoye par le micro:bit objet :
             <device_id>|T:25.3,H:42,P:999
-        Retourne une liste vide si le format ne correspond pas.
+        Retourne une liste avec **un seul** SensorSnapshotEvent (ou vide).
         """
         raw = raw.strip()
         if "|" not in raw:
@@ -261,26 +282,24 @@ class ProtocolCodec:
         if not device_id:
             return []
 
-        events: List[SensorReadingEvent] = []
+        fields = {}
         for chunk in body.split(","):
             if ":" not in chunk:
                 continue
             key, _, value = chunk.partition(":")
-            key = key.strip().upper()
-            if key not in _SENSOR_KEYS:
+            field = _SENSOR_FIELD.get(key.strip().upper())
+            if field is None:
                 continue
             try:
-                f_value = float(value.strip())
+                fields[field] = float(value.strip())
             except ValueError:
                 continue
-            events.append(SensorReadingEvent(
-                reading=SensorReading(
-                    controller_id=device_id,
-                    sensor_id=key,
-                    value=f_value,
-                )
-            ))
-        return events
+
+        if not fields:
+            return []
+        return [SensorSnapshotEvent(
+            snapshot=SensorSnapshot(controller_id=device_id, **fields)
+        )]
 
     @staticmethod
     def parse_pairing(raw: str) -> Optional[tuple]:

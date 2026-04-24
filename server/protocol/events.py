@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from typing import Optional
-from core.models import SensorReading, ConfigCommand
+from core.models import SensorReading, SensorSnapshot, ConfigCommand
 
 @dataclass(frozen=True)
 class AppEvent:
@@ -40,4 +40,25 @@ class ConfigCommandEvent(AppEvent):
 
 @dataclass(frozen=True)
 class SensorReadingEvent(AppEvent):
+    """Une seule valeur (trame CSV legacy '<ctrl>,<sensor>,<value>').
+
+    Le service la convertit en snapshot a un seul champ avant stockage.
+    """
     reading: SensorReading
+
+
+@dataclass(frozen=True)
+class SensorSnapshotEvent(AppEvent):
+    """Un instantane complet (pipe payload ou JSON multi-capteurs)."""
+    snapshot: SensorSnapshot
+
+
+@dataclass(frozen=True)
+class HistoryRequestEvent(AppEvent):
+    """Demande d'historique pour un micro:bit particulier.
+
+    ``limit`` borne le nombre de snapshots retournes (defaut 50, max 500).
+    """
+    passkey: str
+    controller_id: str
+    limit: int = 50

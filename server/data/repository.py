@@ -4,10 +4,36 @@ import logging
 import datetime
 from typing import List, Tuple, Optional, Any
 from .database import Database
-from core.models import SensorReading, ConfigCommand
+from core.models import SensorReading, SensorSnapshot, ConfigCommand
 
 logger = logging.getLogger("IoTRepository")
 STATIC_SALT = "iot_server_static_salt_v2"
+
+
+# Conversion snapshot -> lignes legacy (une ligne par capteur non-nul).
+_SENSOR_COLUMN_TO_ID = (
+    (1, "T"),  # temperature
+    (2, "H"),  # humidity
+    (3, "L"),  # luminosity
+    (4, "P"),  # pressure
+)
+
+
+def _explode_snapshots(snapshots: List[Tuple]) -> List[Tuple[str, str, float, str]]:
+    """Transforme (ctrl, T, H, L, P, ts) en plusieurs (ctrl, sensor_id, value, ts).
+
+    Utilitaire pour garder la compat avec les anciens appelants qui attendaient
+    une ligne par capteur.
+    """
+    out: List[Tuple[str, str, float, str]] = []
+    for row in snapshots or []:
+        ctrl, ts = row[0], row[5]
+        for idx, sensor_id in _SENSOR_COLUMN_TO_ID:
+            value = row[idx]
+            if value is None:
+                continue
+            out.append((ctrl, sensor_id, float(value), ts))
+    return out
 
 @functools.lru_cache(maxsize=128)
 def hash_passkey(passkey: str) -> str:
@@ -24,56 +50,133 @@ class IoTRepository:
         self.db = db
 
     # ------------------------------------------------------------------
-    # Readings
+    # Readings (snapshots multi-capteurs)
     # ------------------------------------------------------------------
 
-    def insert_reading(self, reading: SensorReading) -> None:
+    # Les readings sont stockes une ligne par snapshot. Les methodes ci-dessous
+    # retournent les tuples :
+    #   (controller_id, temperature, humidity, luminosity, pressure, timestamp)
+    # Les champs capteurs peuvent etre None si la trame source ne les contenait
+    # pas (typiquement le cas de la luminosite L sur le micro:bit actuel).
+    READING_COLUMNS = (
+        "controller_id, temperature, humidity, luminosity, pressure, timestamp"
+    )
+
+    def insert_snapshot(self, snapshot: SensorSnapshot) -> None:
         with self.db.connection() as conn:
             cursor = conn.cursor()
-            now_str = reading.timestamp.strftime('%Y-%m-%d %H:%M:%S.%f')
+            now_str = snapshot.timestamp.strftime('%Y-%m-%d %H:%M:%S.%f')
             cursor.execute('''
-                INSERT INTO readings (controller_id, sensor_id, value, timestamp)
-                VALUES (?, ?, ?, ?)
-            ''', (reading.controller_id, reading.sensor_id, reading.value, now_str))
+                INSERT INTO readings
+                    (controller_id, temperature, humidity, luminosity, pressure, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (
+                snapshot.controller_id,
+                snapshot.temperature,
+                snapshot.humidity,
+                snapshot.luminosity,
+                snapshot.pressure,
+                now_str,
+            ))
 
-    def get_latest_readings_for_user(self, passkey_hash: str) -> List[Tuple[str, str, float, str]]:
-        """Dernieres lectures de TOUS les controllers appartenant a l'utilisateur."""
+    def insert_reading(self, reading: SensorReading) -> None:
+        """Enveloppe legacy : une trame CSV "<ctrl>,<sensor>,<value>" devient un
+        snapshot a un seul champ renseigne."""
+        key = reading.sensor_id.strip().upper()
+        mapping = {
+            "T": "temperature", "TEMP": "temperature", "TEMPERATURE": "temperature",
+            "H": "humidity", "HUM": "humidity", "HUMID": "humidity",
+            "HUMIDITY": "humidity", "HUMIDITE": "humidity",
+            "L": "luminosity", "LUM": "luminosity", "LUMIN": "luminosity",
+            "LUMINOSITY": "luminosity", "LUMINOSITE": "luminosity",
+            "P": "pressure", "PRES": "pressure", "PRESSURE": "pressure",
+            "PRESSION": "pressure",
+        }
+        field = mapping.get(key)
+        if field is None:
+            logger.warning(f"Unknown legacy sensor_id '{reading.sensor_id}', ignored")
+            return
+        snapshot = SensorSnapshot(
+            controller_id=reading.controller_id,
+            timestamp=reading.timestamp,
+            **{field: reading.value},
+        )
+        self.insert_snapshot(snapshot)
+
+    def get_latest_snapshot_for_user(self, passkey_hash: str) -> List[Tuple]:
+        """Dernier snapshot de CHAQUE controller appartenant a l'utilisateur."""
         controllers = self.get_user_controllers(passkey_hash)
         if not controllers:
             return []
-        return self._latest_for_controllers(controllers)
+        return self._latest_snapshots_for(controllers)
+
+    def get_latest_snapshot_for_controller(
+        self, passkey_hash: str, controller_id: str
+    ) -> Optional[List[Tuple]]:
+        """Dernier snapshot d'un controller specifique, liste d'un seul element
+        pour la coherence avec get_latest_snapshot_for_user.
+
+        Retourne None si le controller n'appartient pas a l'utilisateur.
+        Retourne [] si le controller n'a pas encore de donnees.
+        """
+        if not self.user_owns_controller(passkey_hash, controller_id):
+            return None
+        return self._latest_snapshots_for([controller_id])
+
+    def _latest_snapshots_for(self, controller_ids: List[str]) -> List[Tuple]:
+        with self.db.connection() as conn:
+            cursor = conn.cursor()
+            placeholders = ",".join(["?"] * len(controller_ids))
+            query = f'''
+                SELECT {self.READING_COLUMNS}
+                FROM readings
+                WHERE id IN (
+                    SELECT MAX(id) FROM readings
+                    WHERE controller_id IN ({placeholders})
+                    GROUP BY controller_id
+                )
+                ORDER BY controller_id
+            '''
+            cursor.execute(query, controller_ids)
+            return cursor.fetchall()
+
+    def get_history_for_controller(
+        self, passkey_hash: str, controller_id: str, limit: int = 50
+    ) -> Optional[List[Tuple]]:
+        """Les ``limit`` derniers snapshots d'un controller, plus recent d'abord.
+
+        Retourne None si le controller n'appartient pas a l'utilisateur.
+        """
+        if not self.user_owns_controller(passkey_hash, controller_id):
+            return None
+        limit = max(1, min(limit, 500))
+        with self.db.connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"SELECT {self.READING_COLUMNS} FROM readings "
+                "WHERE controller_id = ? "
+                "ORDER BY timestamp DESC, id DESC LIMIT ?",
+                (controller_id, limit),
+            )
+            return cursor.fetchall()
+
+    # ------------------------------------------------------------------
+    # Retro-compat : les anciennes methodes retournaient une ligne par capteur.
+    # On garde les noms pour que les callers et tests externes continuent a
+    # fonctionner pendant la bascule. Chaque snapshot est "explose" en 1..4
+    # lignes (ctrl, sensor_id, value, timestamp), une par champ non-NULL.
+    # ------------------------------------------------------------------
+
+    def get_latest_readings_for_user(self, passkey_hash: str) -> List[Tuple[str, str, float, str]]:
+        return _explode_snapshots(self.get_latest_snapshot_for_user(passkey_hash))
 
     def get_latest_readings_for_controller(
         self, passkey_hash: str, controller_id: str
     ) -> Optional[List[Tuple[str, str, float, str]]]:
-        """Dernieres lectures d'un controller specifique.
-
-        Retourne None si le controller n'appartient pas a l'utilisateur.
-        Retourne [] si le controller appartient mais n'a pas encore de donnees.
-        """
-        if not self.user_owns_controller(passkey_hash, controller_id):
+        snaps = self.get_latest_snapshot_for_controller(passkey_hash, controller_id)
+        if snaps is None:
             return None
-        return self._latest_for_controllers([controller_id])
-
-    def _latest_for_controllers(
-        self, controller_ids: List[str]
-    ) -> List[Tuple[str, str, float, str]]:
-        with self.db.connection() as conn:
-            cursor = conn.cursor()
-            placeholders = ','.join(['?'] * len(controller_ids))
-            query = f'''
-                SELECT controller_id, sensor_id, value, timestamp
-                FROM readings
-                WHERE id IN (
-                    SELECT MAX(id)
-                    FROM readings
-                    WHERE controller_id IN ({placeholders})
-                    GROUP BY controller_id, sensor_id
-                )
-                ORDER BY controller_id, sensor_id
-            '''
-            cursor.execute(query, controller_ids)
-            return cursor.fetchall()
+        return _explode_snapshots(snaps)
 
     # ------------------------------------------------------------------
     # Configurations

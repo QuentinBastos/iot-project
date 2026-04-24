@@ -27,6 +27,13 @@
     <string name="sensor_luminosity">Luminosite</string>
     <string name="sensor_pressure">Pression</string>
 
+    <!-- Sensor history -->
+    <string name="section_history">Historique capteurs</string>
+    <string name="btn_load_history">Charger l\'historique</string>
+    <string name="history_limit_hint">Derniers %1$d enregistrements du micro:bit selectionne</string>
+    <string name="history_empty">Aucune donnee historique</string>
+    <string name="history_header">Date           T     H     L     P</string>
+
     <!-- Sensor data -->
     <string name="section_sensor_data">Donnees capteurs</string>
     <string name="btn_get_data">Rafraichir</string>

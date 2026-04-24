@@ -90,6 +90,47 @@ class TestProtocolCodec(unittest.TestCase):
         reading = SensorReading(controller_id="MC01", sensor_id="HUM", value=45.0)
         self.assertEqual(ProtocolCodec.encode_reading(reading), "MC01,HUM,45.0")
 
+    # ---- decode_json_sensor_batch ----
+
+    def test_json_batch_uses_default_controller(self):
+        events = ProtocolCodec.decode_json_sensor_batch(
+            '{"T":25.3, "H":42, "P":999}', default_controller_id="17"
+        )
+        self.assertEqual(len(events), 3)
+        by_sensor = {e.reading.sensor_id: e.reading for e in events}
+        self.assertEqual(by_sensor["T"].value, 25.3)
+        self.assertEqual(by_sensor["H"].value, 42.0)
+        self.assertEqual(by_sensor["P"].value, 999.0)
+        for e in events:
+            self.assertEqual(e.reading.controller_id, "17")
+
+    def test_json_batch_id_override(self):
+        events = ProtocolCodec.decode_json_sensor_batch(
+            '{"id":"42", "T":20.0}', default_controller_id="default"
+        )
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].reading.controller_id, "42")
+
+    def test_json_batch_ignores_unknown_keys(self):
+        events = ProtocolCodec.decode_json_sensor_batch(
+            '{"T":25, "UNKNOWN":99, "H":42}', default_controller_id="17"
+        )
+        keys = {e.reading.sensor_id for e in events}
+        self.assertEqual(keys, {"T", "H"})
+
+    def test_json_batch_invalid_json(self):
+        self.assertEqual(
+            ProtocolCodec.decode_json_sensor_batch("{not json", default_controller_id="17"),
+            [],
+        )
+
+    def test_json_batch_non_numeric_value_skipped(self):
+        events = ProtocolCodec.decode_json_sensor_batch(
+            '{"T":"abc", "H":42}', default_controller_id="17"
+        )
+        keys = {e.reading.sensor_id for e in events}
+        self.assertEqual(keys, {"H"})
+
 
 if __name__ == '__main__':
     unittest.main()

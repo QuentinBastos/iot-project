@@ -3,18 +3,16 @@ import sys
 import os
 import datetime
 import tempfile
-from typing import List
 
-# Add server to path for imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from data.database import Database
 from data.repository import IoTRepository, hash_passkey
 from core.models import SensorReading, ConfigCommand
 
+
 class TestIoTRepository(unittest.TestCase):
     def setUp(self):
-        # Use a temporary file for the database to ensure schema persistence across connections
         self.db_fd, self.db_path = tempfile.mkstemp(suffix=".db")
         self.db = Database(self.db_path)
         self.repo = IoTRepository(self.db)
@@ -26,71 +24,106 @@ class TestIoTRepository(unittest.TestCase):
         if os.path.exists(self.db_path):
             os.remove(self.db_path)
 
+    def _add_reading(self, controller_id: str, sensor_id: str, value: float) -> None:
+        self.repo.insert_reading(SensorReading(
+            controller_id=controller_id,
+            sensor_id=sensor_id,
+            value=value,
+            timestamp=datetime.datetime.now(),
+        ))
+
     def test_user_registration(self):
         self.assertFalse(self.repo.is_user_valid(self.passkey_hash))
         self.repo.register_user(self.passkey_hash)
         self.assertTrue(self.repo.is_user_valid(self.passkey_hash))
 
-    def test_sensor_assignment_and_retrieval(self):
+    def test_controller_assignment_and_retrieval(self):
         self.repo.register_user(self.passkey_hash)
-        
-        # Add sensors
-        self.assertTrue(self.repo.add_user_sensor(self.passkey_hash, "TEMP01"))
-        self.assertTrue(self.repo.add_user_sensor(self.passkey_hash, "HUMID01"))
-        
-        sensors = self.repo.get_user_sensors(self.passkey_hash)
-        self.assertIn("TEMP01", sensors)
-        self.assertIn("HUMID01", sensors)
-        self.assertEqual(len(sensors), 2)
+        self.assertTrue(self.repo.add_user_controller(self.passkey_hash, "MC01"))
+        self.assertTrue(self.repo.add_user_controller(self.passkey_hash, "MC02"))
 
-    def test_prevent_duplicate_sensor_assignment(self):
+        ctrls = self.repo.get_user_controllers(self.passkey_hash)
+        self.assertEqual(sorted(ctrls), ["MC01", "MC02"])
+
+    def test_prevent_cross_user_controller_claim(self):
         other_hash = hash_passkey("other_pass")
         self.repo.register_user(self.passkey_hash)
         self.repo.register_user(other_hash)
-        
-        self.repo.add_user_sensor(self.passkey_hash, "SHARED_SENSOR")
-        # Attempt to add to another user should fail (return False)
-        result = self.repo.add_user_sensor(other_hash, "SHARED_SENSOR")
-        self.assertFalse(result)
+
+        self.assertTrue(self.repo.add_user_controller(self.passkey_hash, "MC01"))
+        self.assertFalse(self.repo.add_user_controller(other_hash, "MC01"))
+
+    def test_idempotent_readd(self):
+        self.repo.register_user(self.passkey_hash)
+        self.assertTrue(self.repo.add_user_controller(self.passkey_hash, "MC01"))
+        # Re-adding the same controller for the same user is a no-op success.
+        self.assertTrue(self.repo.add_user_controller(self.passkey_hash, "MC01"))
+
+    def test_user_owns_controller(self):
+        self.repo.register_user(self.passkey_hash)
+        self.repo.add_user_controller(self.passkey_hash, "MC01")
+        self.assertTrue(self.repo.user_owns_controller(self.passkey_hash, "MC01"))
+        self.assertFalse(self.repo.user_owns_controller(self.passkey_hash, "MC99"))
 
     def test_reading_insertion_and_user_fetch(self):
         self.repo.register_user(self.passkey_hash)
-        self.repo.add_user_sensor(self.passkey_hash, "TEMP01")
-        
-        reading = SensorReading(
-            controller_id="MC01",
-            sensor_id="TEMP01",
-            value=25.5,
-            timestamp=datetime.datetime.now()
-        )
-        self.repo.insert_reading(reading)
-        
-        # Fetch latest readings for user
+        self.repo.add_user_controller(self.passkey_hash, "MC01")
+        self._add_reading("MC01", "TEMP", 25.5)
+        self._add_reading("MC01", "HUM", 40.0)
+        # A reading from an unowned controller should not be returned
+        self._add_reading("MC99", "TEMP", 99.9)
+
         results = self.repo.get_latest_readings_for_user(self.passkey_hash)
-        self.assertEqual(len(results), 1)
-        # Result format: (controller_id, sensor_id, value, timestamp)
-        self.assertEqual(results[0][0], "MC01")
-        self.assertEqual(results[0][1], "TEMP01")
-        self.assertEqual(results[0][2], 25.5)
+        self.assertEqual(len(results), 2)
+        sensors = {row[1]: row[2] for row in results}
+        self.assertEqual(sensors["TEMP"], 25.5)
+        self.assertEqual(sensors["HUM"], 40.0)
+
+    def test_readings_per_controller(self):
+        self.repo.register_user(self.passkey_hash)
+        self.repo.add_user_controller(self.passkey_hash, "MC01")
+        self.repo.add_user_controller(self.passkey_hash, "MC02")
+        self._add_reading("MC01", "TEMP", 22.0)
+        self._add_reading("MC02", "TEMP", 30.0)
+
+        mc01 = self.repo.get_latest_readings_for_controller(self.passkey_hash, "MC01")
+        self.assertIsNotNone(mc01)
+        self.assertEqual(len(mc01), 1)
+        self.assertEqual(mc01[0][0], "MC01")
+        self.assertEqual(mc01[0][2], 22.0)
+
+        # Unauthorized controller -> None
+        self.assertIsNone(
+            self.repo.get_latest_readings_for_controller(self.passkey_hash, "MC99")
+        )
 
     def test_configuration_persistence(self):
         config = ConfigCommand(controller_id="MC01", display_order="TLH")
         self.repo.set_configuration(config)
-        
-        saved_config = self.repo.get_configuration("MC01")
-        self.assertEqual(saved_config, "TLH")
-        
-        # Test update
+        self.assertEqual(self.repo.get_configuration("MC01"), "TLH")
+
         self.repo.set_configuration(ConfigCommand(controller_id="MC01", display_order="HTL"))
         self.assertEqual(self.repo.get_configuration("MC01"), "HTL")
 
-    def test_remove_sensor(self):
+    def test_remove_controller_also_purges_data(self):
         self.repo.register_user(self.passkey_hash)
-        self.repo.add_user_sensor(self.passkey_hash, "TEMP01")
-        self.repo.remove_user_sensor(self.passkey_hash, "TEMP01")
-        
-        sensors = self.repo.get_user_sensors(self.passkey_hash)
-        self.assertNotIn("TEMP01", sensors)
+        self.repo.add_user_controller(self.passkey_hash, "MC01")
+        self._add_reading("MC01", "TEMP", 25.0)
+        self.repo.set_configuration(ConfigCommand(controller_id="MC01", display_order="TLH"))
+
+        self.assertTrue(self.repo.remove_user_controller(self.passkey_hash, "MC01"))
+
+        self.assertNotIn("MC01", self.repo.get_user_controllers(self.passkey_hash))
+        # readings + configurations should be purged
+        self.assertEqual(
+            self.repo.get_latest_readings_for_user(self.passkey_hash), []
+        )
+        self.assertIsNone(self.repo.get_configuration("MC01"))
+
+    def test_remove_controller_not_owned(self):
+        self.repo.register_user(self.passkey_hash)
+        self.assertFalse(self.repo.remove_user_controller(self.passkey_hash, "MC99"))
+
 
 if __name__ == '__main__':
     unittest.main()

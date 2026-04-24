@@ -7,7 +7,7 @@ from .database import Database
 from core.models import SensorReading, ConfigCommand
 
 logger = logging.getLogger("IoTRepository")
-STATIC_SALT = "iot_gateway_static_salt_v2"
+STATIC_SALT = "iot_server_static_salt_v2"
 
 @functools.lru_cache(maxsize=128)
 def hash_passkey(passkey: str) -> str:
@@ -23,6 +23,10 @@ class IoTRepository:
     def __init__(self, db: Database):
         self.db = db
 
+    # ------------------------------------------------------------------
+    # Readings
+    # ------------------------------------------------------------------
+
     def insert_reading(self, reading: SensorReading) -> None:
         with self.db.connection() as conn:
             cursor = conn.cursor()
@@ -33,25 +37,47 @@ class IoTRepository:
             ''', (reading.controller_id, reading.sensor_id, reading.value, now_str))
 
     def get_latest_readings_for_user(self, passkey_hash: str) -> List[Tuple[str, str, float, str]]:
-        sensor_ids = self.get_user_sensors(passkey_hash)
-        if not sensor_ids:
+        """Dernieres lectures de TOUS les controllers appartenant a l'utilisateur."""
+        controllers = self.get_user_controllers(passkey_hash)
+        if not controllers:
             return []
+        return self._latest_for_controllers(controllers)
 
+    def get_latest_readings_for_controller(
+        self, passkey_hash: str, controller_id: str
+    ) -> Optional[List[Tuple[str, str, float, str]]]:
+        """Dernieres lectures d'un controller specifique.
+
+        Retourne None si le controller n'appartient pas a l'utilisateur.
+        Retourne [] si le controller appartient mais n'a pas encore de donnees.
+        """
+        if not self.user_owns_controller(passkey_hash, controller_id):
+            return None
+        return self._latest_for_controllers([controller_id])
+
+    def _latest_for_controllers(
+        self, controller_ids: List[str]
+    ) -> List[Tuple[str, str, float, str]]:
         with self.db.connection() as conn:
             cursor = conn.cursor()
-            placeholders = ','.join(['?'] * len(sensor_ids))
+            placeholders = ','.join(['?'] * len(controller_ids))
             query = f'''
                 SELECT controller_id, sensor_id, value, timestamp
                 FROM readings
                 WHERE id IN (
                     SELECT MAX(id)
                     FROM readings
-                    WHERE sensor_id IN ({placeholders})
+                    WHERE controller_id IN ({placeholders})
                     GROUP BY controller_id, sensor_id
                 )
+                ORDER BY controller_id, sensor_id
             '''
-            cursor.execute(query, sensor_ids)
+            cursor.execute(query, controller_ids)
             return cursor.fetchall()
+
+    # ------------------------------------------------------------------
+    # Configurations
+    # ------------------------------------------------------------------
 
     def set_configuration(self, config: ConfigCommand) -> None:
         with self.db.connection() as conn:
@@ -74,6 +100,10 @@ class IoTRepository:
             result = cursor.fetchone()
             return result[0] if result else None
 
+    # ------------------------------------------------------------------
+    # Users
+    # ------------------------------------------------------------------
+
     def register_user(self, passkey_hash: str) -> None:
         with self.db.connection() as conn:
             cursor = conn.cursor()
@@ -88,32 +118,76 @@ class IoTRepository:
             cursor.execute("SELECT 1 FROM users WHERE passkey_hash = ?", (passkey_hash,))
             return cursor.fetchone() is not None
 
-    def add_user_sensor(self, passkey_hash: str, sensor_id: str) -> bool:
+    # ------------------------------------------------------------------
+    # User <-> Controllers
+    # ------------------------------------------------------------------
+
+    def add_user_controller(self, passkey_hash: str, controller_id: str) -> bool:
+        """Associe un controller a un utilisateur.
+
+        Retourne False si le controller appartient deja a un autre utilisateur.
+        Re-ajouter un controller deja possede par le meme utilisateur est un no-op success.
+        """
         with self.db.connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT passkey_hash FROM user_sensors WHERE sensor_id = ?", (sensor_id,))
+            cursor.execute(
+                "SELECT passkey_hash FROM user_controllers WHERE controller_id = ?",
+                (controller_id,),
+            )
             existing = cursor.fetchone()
             if existing and existing[0] != passkey_hash:
-                logger.info(f"Prevented attempt to claim already-assigned sensor {sensor_id}.")
+                logger.info(
+                    f"Prevented claim of already-assigned controller {controller_id}."
+                )
                 return False
 
             cursor.execute('''
-                INSERT OR IGNORE INTO user_sensors (passkey_hash, sensor_id)
+                INSERT OR IGNORE INTO user_controllers (passkey_hash, controller_id)
                 VALUES (?, ?)
-            ''', (passkey_hash, sensor_id))
+            ''', (passkey_hash, controller_id))
             return True
 
-    def remove_user_sensor(self, passkey_hash: str, sensor_id: str) -> None:
-        with self.db.connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                DELETE FROM user_sensors WHERE passkey_hash = ? AND sensor_id = ?
-            ''', (passkey_hash, sensor_id))
+    def remove_user_controller(self, passkey_hash: str, controller_id: str) -> bool:
+        """Supprime l'association ET purge les donnees stockees du controller.
 
-    def get_user_sensors(self, passkey_hash: str) -> List[str]:
+        Retourne True uniquement si l'utilisateur possedait bien ce controller.
+        """
+        with self.db.connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT 1 FROM user_controllers WHERE passkey_hash = ? AND controller_id = ?",
+                (passkey_hash, controller_id),
+            )
+            if cursor.fetchone() is None:
+                return False
+
+            cursor.execute(
+                "DELETE FROM user_controllers WHERE passkey_hash = ? AND controller_id = ?",
+                (passkey_hash, controller_id),
+            )
+            cursor.execute(
+                "DELETE FROM readings WHERE controller_id = ?", (controller_id,)
+            )
+            cursor.execute(
+                "DELETE FROM configurations WHERE controller_id = ?", (controller_id,)
+            )
+            return True
+
+    def get_user_controllers(self, passkey_hash: str) -> List[str]:
         with self.db.connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT sensor_id FROM user_sensors WHERE passkey_hash = ?
+                SELECT controller_id FROM user_controllers
+                WHERE passkey_hash = ?
+                ORDER BY controller_id
             ''', (passkey_hash,))
             return [row[0] for row in cursor.fetchall()]
+
+    def user_owns_controller(self, passkey_hash: str, controller_id: str) -> bool:
+        with self.db.connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT 1 FROM user_controllers WHERE passkey_hash = ? AND controller_id = ?",
+                (passkey_hash, controller_id),
+            )
+            return cursor.fetchone() is not None

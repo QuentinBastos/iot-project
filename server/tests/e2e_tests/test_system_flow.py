@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 
 from data.database import Database
 from data.repository import IoTRepository
-from core.service import GatewayService
+from core.service import ServerService
 from infrastructure.udp_server import UDPServer
 from infrastructure.serial_server import SerialServer
 
@@ -24,7 +24,7 @@ class TestSystemFlowE2E(unittest.TestCase):
         self.db_fd, self.db_path = tempfile.mkstemp(suffix=".db")
         self.db = Database(self.db_path)
         self.repo = IoTRepository(self.db)
-        self.service = GatewayService(self.repo)
+        self.service = ServerService(self.repo)
         
         # Setup Serial Mock
         self.mock_serial = MagicMock()
@@ -76,45 +76,50 @@ class TestSystemFlowE2E(unittest.TestCase):
 
     def test_full_data_lifecycle(self):
         passkey = "user_secret"
-        sensor_id = "TEMP_01"
-        
-        # 1. Register User & Add Sensor via UDP
+        controller_id = "MC01"
+        sensor_id = "TEMP"
+
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.settimeout(2)
-            
-            # Register
+
             sock.sendto(f"INIT,{passkey}".encode(), ("127.0.0.1", self.udp_port))
             data, _ = sock.recvfrom(1024)
             self.assertEqual(data.decode(), "OK")
-            
-            # Add Sensor
-            sock.sendto(f"ADD,{passkey},{sensor_id}".encode(), ("127.0.0.1", self.udp_port))
+
+            sock.sendto(f"ADD,{passkey},{controller_id}".encode(), ("127.0.0.1", self.udp_port))
             data, _ = sock.recvfrom(1024)
             self.assertEqual(data.decode(), "OK")
-            
-            # 2. Simulate Serial Input (Micro:bit sending data)
-            # We use a helper to return data once, then empty bytes to avoid flooding & StopIteration
+
+            sock.sendto(f"LIST,{passkey}".encode(), ("127.0.0.1", self.udp_port))
+            data, _ = sock.recvfrom(1024)
+            self.assertEqual(data.decode(), controller_id)
+
             def serial_read_side_effect(*args, **kwargs):
                 if not hasattr(serial_read_side_effect, 'called'):
                     serial_read_side_effect.called = True
-                    return f"MC01,{sensor_id},24.8\n".encode()
+                    return f"{controller_id},{sensor_id},24.8\n".encode()
                 return b""
-            
+
             self.mock_serial.readline.side_effect = serial_read_side_effect
-            time.sleep(0.5) # Give the serial thread time to process the side_effect
-            
-            # 3. Request Data via UDP
-            sock.sendto(f"GET,{passkey}".encode(), ("127.0.0.1", self.udp_port))
+            time.sleep(0.5)
+
+            sock.sendto(f"GET,{passkey},{controller_id}".encode(), ("127.0.0.1", self.udp_port))
             data, _ = sock.recvfrom(1024)
-            response = data.decode()
-            self.assertIn(f"MC01,{sensor_id},24.8", response)
-            
-            # 4. Trigger Config Command via UDP -> Expect Serial Output
-            sock.sendto(f"MC01,CONFIG,TLH".encode(), ("127.0.0.1", self.udp_port))
+            self.assertIn(f"{controller_id},{sensor_id},24.8", data.decode())
+
+            sock.sendto(f"{controller_id},CONFIG,TLH".encode(), ("127.0.0.1", self.udp_port))
             time.sleep(1.0)
-            
-            # Verify Serial Output
-            self.mock_serial.write.assert_called_with(b"MC01,CONFIG,TLH\n")
+            self.mock_serial.write.assert_called_with(f"{controller_id},CONFIG,TLH\n".encode())
+
+            # Remove controller -> data purged
+            sock.sendto(f"REMOVE,{passkey},{controller_id}".encode(), ("127.0.0.1", self.udp_port))
+            data, _ = sock.recvfrom(1024)
+            self.assertEqual(data.decode(), "OK")
+
+            sock.sendto(f"LIST,{passkey}".encode(), ("127.0.0.1", self.udp_port))
+            data, _ = sock.recvfrom(1024)
+            self.assertEqual(data.decode(), "")
 
 if __name__ == '__main__':
     unittest.main()
+

@@ -5,7 +5,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Dict, Tuple, Optional
-from core.service import GatewayService
+from core.service import ServerService
 from protocol.codec import ProtocolCodec
 
 logger = logging.getLogger("UDPServer")
@@ -38,10 +38,13 @@ class UDPServerHandler(socketserver.BaseRequestHandler):
                 logger.warning(f"Rate limit exceeded for {client_address[0]}")
                 return
 
+            logger.debug(f"UDP In from {client_address[0]}:{client_address[1]}: '{raw_data}'")
+
             event = ProtocolCodec.decode(raw_data)
             if event:
                 response = self.server.service.handle_event(event)
                 if response:
+                    logger.debug(f"UDP Out to {client_address[0]}:{client_address[1]}: '{response}'")
                     socket.sendto(response.encode('utf-8'), client_address)
             else:
                 logger.debug(f"Received unparsable UDP message: {raw_data}")
@@ -50,12 +53,12 @@ class UDPServerHandler(socketserver.BaseRequestHandler):
             logger.error(f"Error in UDP handler: {e}")
 
 class ThreadedUDPServer(socketserver.ThreadingMixIn, socketserver.UDPServer):
-    def __init__(self, server_address: Tuple[str, int], RequestHandlerClass: Any, service: GatewayService):
+    def __init__(self, server_address: Tuple[str, int], RequestHandlerClass: Any, service: ServerService):
         super().__init__(server_address, RequestHandlerClass)
         self.service = service
 
 class UDPServer(threading.Thread):
-    def __init__(self, service: GatewayService, port: int = 10000, host: str = "0.0.0.0"):
+    def __init__(self, service: ServerService, port: int = 10000, host: str = "0.0.0.0"):
         super().__init__()
         self.service = service
         self.host = host
@@ -75,3 +78,4 @@ class UDPServer(threading.Thread):
             self.server.shutdown()
             self.server.server_close()
             logger.info("UDP Server shut down.")
+

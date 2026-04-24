@@ -9,12 +9,12 @@ from unittest.mock import MagicMock
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from infrastructure.udp_server import UDPServer
-from core.service import GatewayService
+from core.service import ServerService
 from protocol.events import RegisterUserEvent
 
 class TestUDPServerInfrastructure(unittest.TestCase):
     def setUp(self):
-        self.mock_service = MagicMock(spec=GatewayService)
+        self.mock_service = MagicMock(spec=ServerService)
         self.port = 10005 # Use a dedicated port for testing
         self.server = UDPServer(service=self.mock_service, port=self.port, host="127.0.0.1")
         self.server.start()
@@ -63,3 +63,4 @@ class TestUDPServerInfrastructure(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+

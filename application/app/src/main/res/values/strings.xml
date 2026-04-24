@@ -1,0 +1,46 @@
+<resources>
+    <string name="app_name">Bureau bien etre</string>
+
+    <!-- Server config -->
+    <string name="section_server">Configuration serveur</string>
+    <string name="hint_ip">Adresse IP</string>
+    <string name="hint_port">Port</string>
+    <string name="btn_connect">Connecter</string>
+    <string name="btn_disconnect">Deconnecter</string>
+    <string name="status_connected">Connecte a %1$s:%2$d</string>
+    <string name="status_disconnected">Deconnecte</string>
+
+    <!-- Display order -->
+    <string name="section_display_order">Ordre d\'affichage OLED</string>
+    <string name="btn_send_order">Envoyer l\'ordre</string>
+    <string name="btn_reset_order">Reset</string>
+    <string name="label_order">Ordre : %1$s</string>
+    <string name="label_order_empty">Appuyez sur les capteurs dans l\'ordre souhaite</string>
+
+    <!-- Sensor chips -->
+    <string name="chip_temperature">Temperature</string>
+    <string name="chip_humidity">Humidite</string>
+    <string name="chip_luminosity">Luminosite</string>
+    <string name="chip_pressure">Pression</string>
+
+    <!-- Sensor data -->
+    <string name="section_sensor_data">Donnees capteurs</string>
+    <string name="btn_get_data">Rafraichir</string>
+    <string name="label_temperature">Temperature</string>
+    <string name="label_humidity">Humidite</string>
+    <string name="label_luminosity">Luminosite</string>
+    <string name="label_pressure">Pression</string>
+    <string name="value_placeholder">--</string>
+    <string name="unit_temperature">\u00B0C</string>
+    <string name="unit_humidity">%</string>
+    <string name="unit_luminosity">lux</string>
+    <string name="unit_pressure">hPa</string>
+    <string name="last_update">Derniere mise a jour : %1$s</string>
+    <string name="last_update_never">Aucune donnee recue</string>
+
+    <!-- Errors -->
+    <string name="error_no_server">Veuillez configurer le serveur d\'abord</string>
+    <string name="error_empty_order">Veuillez selectionner au moins un capteur</string>
+    <string name="error_send_failed">Erreur d\'envoi : %1$s</string>
+    <string name="success_send">Ordre envoye</string>
+</resources>

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+
+    <!-- Primary palette -->
+    <color name="primary">#FF2E7D32</color>
+    <color name="primary_light">#FF60AD5E</color>
+    <color name="primary_dark">#FF005005</color>
+    <color name="on_primary">#FFFFFFFF</color>
+
+    <!-- Sensor card colors -->
+    <color name="sensor_temperature">#FFFF7043</color>
+    <color name="sensor_temperature_bg">#1AFF7043</color>
+    <color name="sensor_humidity">#FF42A5F5</color>
+    <color name="sensor_humidity_bg">#1A42A5F5</color>
+    <color name="sensor_luminosity">#FFFFCA28</color>
+    <color name="sensor_luminosity_bg">#1AFFCA28</color>
+    <color name="sensor_pressure">#FF78909C</color>
+    <color name="sensor_pressure_bg">#1A78909C</color>
+
+    <!-- Status colors -->
+    <color name="status_connected">#FF4CAF50</color>
+    <color name="status_disconnected">#FFE57373</color>
+</resources>

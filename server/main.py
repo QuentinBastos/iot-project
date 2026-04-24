@@ -1,0 +1,97 @@
+import sys
+import signal
+import time
+import logging
+import argparse
+from typing import Optional, Any
+
+from data.database import Database
+from data.repository import IoTRepository
+from core.service import GatewayService
+from infrastructure.udp_server import UDPServer
+from infrastructure.serial_server import SerialServer
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler("storage/gateway.log")
+    ]
+)
+logger = logging.getLogger("IoTApp")
+
+class IoTApplication:
+    """The main application that wires all components together."""
+
+    def __init__(self, db_path: str = "storage/gateway_data.db", 
+                 serial_port: str = "COM3", baudrate: int = 115200, 
+                 udp_port: int = 10000, 
+                 serial_retry: Optional[int] = None):
+        
+        # 1. Setup Persistence Layer
+        self.db = Database(db_path)
+        self.repository = IoTRepository(self.db)
+
+        # 2. Setup Service Layer (Business Logic)
+        self.service = GatewayService(self.repository)
+
+        # 3. Setup Infrastructure Layer (Networking)
+        self.serial_server = SerialServer(
+            service=self.service, 
+            port=serial_port, 
+            baudrate=baudrate, 
+            retry_delay=serial_retry
+        )
+        self.udp_server = UDPServer(service=self.service, port=udp_port)
+
+        # 4. Connect Service to Serial for outgoing commands
+        self.service.set_command_sender(self.serial_server.send_command)
+
+    def start(self) -> None:
+        logger.info("Starting IoT Gateway...")
+        self.service.start()
+        self.serial_server.start()
+        self.udp_server.start()
+        logger.info("IoT Gateway is active. Use Ctrl+C to stop.")
+
+        try:
+            while self.service.running:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            self.stop()
+
+    def stop(self, *args: Any) -> None:
+        logger.info("Shutdown signaling initiated...")
+        self.udp_server.stop()
+        self.serial_server.stop()
+        self.service.stop()
+        logger.info("Shutdown complete.")
+        sys.exit(0)
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="IoT Gateway Server - Refactored Architecture")
+    parser.add_argument("--serial_port", type=str, default="COM3", help="Serial port (e.g., COM3, /dev/ttyUSB0)")
+    parser.add_argument("--baudrate", type=int, default=115200, help="Baudrate (default: 115200)")
+    parser.add_argument("--udp_port", type=int, default=10000, help="UDP LISTEN port (default: 10000)")
+    parser.add_argument("--db", type=str, default="gateway_data.db", help="Path to SQLite database")
+    parser.add_argument("--serial-retry", type=int, nargs='?', const=5, help="Retry delay (seconds) if serial port fails")
+
+    args = parser.parse_args()
+
+    app = IoTApplication(
+        db_path=args.db,
+        serial_port=args.serial_port,
+        baudrate=args.baudrate,
+        udp_port=args.udp_port,
+        serial_retry=args.serial_retry
+    )
+
+    signal.signal(signal.SIGINT, app.stop)
+    signal.signal(signal.SIGTERM, app.stop)
+
+    app.start()
+
+if __name__ == "__main__":
+    main()

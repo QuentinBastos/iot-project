@@ -11,13 +11,11 @@ import java.nio.charset.StandardCharsets;
 
 public class UdpClient {
 
+    private static final int RECEIVE_TIMEOUT_MS = 5000;
+
     private final String serverIp;
     private final int serverPort;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-
-    private DatagramSocket listenerSocket;
-    private volatile boolean listening = false;
-    private Thread listenerThread;
 
     public UdpClient(String serverIp, int serverPort) {
         this.serverIp = serverIp;
@@ -36,13 +34,11 @@ public class UdpClient {
 
     public void send(String message, SendCallback callback) {
         new Thread(() -> {
-            try {
-                DatagramSocket socket = new DatagramSocket();
+            try (DatagramSocket socket = new DatagramSocket()) {
                 byte[] data = message.getBytes(StandardCharsets.UTF_8);
                 InetAddress address = InetAddress.getByName(serverIp);
                 DatagramPacket packet = new DatagramPacket(data, data.length, address, serverPort);
                 socket.send(packet);
-                socket.close();
                 mainHandler.post(callback::onSuccess);
             } catch (Exception e) {
                 mainHandler.post(() -> callback.onError(e.getMessage()));
@@ -50,78 +46,26 @@ public class UdpClient {
         }).start();
     }
 
-    public void requestData(DataCallback callback) {
+    public void sendAndReceive(String message, DataCallback callback) {
         new Thread(() -> {
-            DatagramSocket socket = null;
-            try {
-                socket = new DatagramSocket();
-                socket.setSoTimeout(5000);
+            try (DatagramSocket socket = new DatagramSocket()) {
+                socket.setSoTimeout(RECEIVE_TIMEOUT_MS);
 
-                // Send getValues() request
-                byte[] requestData = "getValues()".getBytes(StandardCharsets.UTF_8);
+                byte[] out = message.getBytes(StandardCharsets.UTF_8);
                 InetAddress address = InetAddress.getByName(serverIp);
-                DatagramPacket sendPacket = new DatagramPacket(requestData, requestData.length, address, serverPort);
-                socket.send(sendPacket);
+                socket.send(new DatagramPacket(out, out.length, address, serverPort));
 
-                // Wait for response
-                byte[] buffer = new byte[1024];
-                DatagramPacket receivePacket = new DatagramPacket(buffer, buffer.length);
-                socket.receive(receivePacket);
+                byte[] buffer = new byte[4096];
+                DatagramPacket rx = new DatagramPacket(buffer, buffer.length);
+                socket.receive(rx);
 
-                String response = new String(receivePacket.getData(), 0, receivePacket.getLength(), StandardCharsets.UTF_8);
+                String response = new String(rx.getData(), 0, rx.getLength(), StandardCharsets.UTF_8);
                 mainHandler.post(() -> callback.onDataReceived(response));
             } catch (SocketTimeoutException e) {
                 mainHandler.post(() -> callback.onError("Timeout: pas de reponse du serveur"));
             } catch (Exception e) {
                 mainHandler.post(() -> callback.onError(e.getMessage()));
-            } finally {
-                if (socket != null && !socket.isClosed()) socket.close();
             }
         }).start();
-    }
-
-    public void startListening(int listenPort, DataCallback callback) {
-        stopListening();
-        listening = true;
-        listenerThread = new Thread(() -> {
-            try {
-                listenerSocket = new DatagramSocket(listenPort);
-                listenerSocket.setReuseAddress(true);
-                listenerSocket.setSoTimeout(2000);
-                byte[] buffer = new byte[1024];
-
-                while (listening) {
-                    try {
-                        DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
-                        listenerSocket.receive(packet);
-                        String message = new String(packet.getData(), 0, packet.getLength(), StandardCharsets.UTF_8);
-                        mainHandler.post(() -> callback.onDataReceived(message));
-                    } catch (SocketTimeoutException e) {
-                        // Expected — loop to check listening flag
-                    }
-                }
-            } catch (Exception e) {
-                if (listening) {
-                    mainHandler.post(() -> callback.onError(e.getMessage()));
-                }
-            } finally {
-                if (listenerSocket != null && !listenerSocket.isClosed()) {
-                    listenerSocket.close();
-                }
-            }
-        });
-        listenerThread.setDaemon(true);
-        listenerThread.start();
-    }
-
-    public void stopListening() {
-        listening = false;
-        if (listenerSocket != null && !listenerSocket.isClosed()) {
-            listenerSocket.close();
-        }
-        if (listenerThread != null) {
-            listenerThread.interrupt();
-            listenerThread = null;
-        }
     }
 }

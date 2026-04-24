@@ -2,9 +2,6 @@ package com.example.bureaubientre;
 
 import android.content.SharedPreferences;
 import android.os.Bundle;
-import android.view.View;
-import android.widget.ScrollView;
-import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import androidx.activity.EdgeToEdge;
@@ -24,18 +21,28 @@ import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 
+/**
+ * Protocole UDP avec le serveur (voir server/protocol/codec.py) :
+ *   INIT,<passkey>                   -> enregistre l'utilisateur
+ *   ADD,<passkey>,<sensor_id>        -> revendique un capteur
+ *   GET,<passkey>                    -> demande les dernieres valeurs
+ *   <controller_id>,CONFIG,<ordre>   -> ordre d'affichage OLED de l'objet
+ * Reponse GET : "ctrl,sensor,value\n..." (multi-lignes).
+ */
 public class MainActivity extends AppCompatActivity {
 
     private static final String PREFS_NAME = "server_config";
     private static final String KEY_IP = "ip";
     private static final String KEY_PORT = "port";
-    private static final String KEY_MAC = "mac";
+    private static final String KEY_CONTROLLER = "controller_id";
+    private static final String KEY_PASSKEY = "passkey";
     private static final int DEFAULT_PORT = 10000;
-    private static final int LISTEN_PORT = 10001;
+
+    // Identifiants de capteurs revendiques via ADD
+    private static final String[] SENSOR_IDS = {"T", "H", "L", "P"};
 
     // Server config views
-    private TextInputEditText editTextIp;
-    private TextInputEditText editTextPort;
+    private TextInputEditText editTextIp, editTextPort;
     private MaterialButton buttonConnect;
     private TextView textStatus;
 
@@ -54,21 +61,13 @@ public class MainActivity extends AppCompatActivity {
     private TextView textLastUpdate;
     private MaterialButton buttonGetData;
 
-    // Discussion views
-    private MaterialButton buttonOpenChat, buttonSendMessage;
-    private LinearLayout chatContainer;
-    private ScrollView chatScroll;
-    private TextInputEditText editTextMessage;
-    private TextView textChatHistory;
-
     // State
     private final StringBuilder displayOrder = new StringBuilder();
     private final Map<String, Chip> chipMap = new LinkedHashMap<>();
     private UdpClient udpClient;
     private boolean connected = false;
-    private boolean paired = false;
-    private String pairedMac = "";
-    private final StringBuilder chatHistory = new StringBuilder();
+    private String passkey = "";
+    private String controllerId = "";
     private SharedPreferences prefs;
 
     @Override
@@ -89,28 +88,17 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void initViews() {
-        // Server config
         editTextIp = findViewById(R.id.editTextIp);
         editTextPort = findViewById(R.id.editTextPort);
         buttonConnect = findViewById(R.id.buttonConnect);
         textStatus = findViewById(R.id.textStatus);
 
-        // Pairing
         editTextPassword = findViewById(R.id.editTextPassword);
         editTextPasswordConfirm = findViewById(R.id.editTextPasswordConfirm);
         editTextMac = findViewById(R.id.editTextMac);
         buttonInit = findViewById(R.id.buttonInit);
         textPairingStatus = findViewById(R.id.textPairingStatus);
 
-        // Discussion
-        buttonOpenChat = findViewById(R.id.buttonOpenChat);
-        buttonSendMessage = findViewById(R.id.buttonSendMessage);
-        chatContainer = findViewById(R.id.chatContainer);
-        chatScroll = findViewById(R.id.chatScroll);
-        editTextMessage = findViewById(R.id.editTextMessage);
-        textChatHistory = findViewById(R.id.textChatHistory);
-
-        // Display order
         chipTemperature = findViewById(R.id.chipTemperature);
         chipHumidity = findViewById(R.id.chipHumidity);
         chipLuminosity = findViewById(R.id.chipLuminosity);
@@ -119,7 +107,6 @@ public class MainActivity extends AppCompatActivity {
         buttonSendOrder = findViewById(R.id.buttonSendOrder);
         buttonResetOrder = findViewById(R.id.buttonResetOrder);
 
-        // Sensor data
         textTemperature = findViewById(R.id.textTemperature);
         textHumidity = findViewById(R.id.textHumidity);
         textLuminosity = findViewById(R.id.textLuminosity);
@@ -127,7 +114,6 @@ public class MainActivity extends AppCompatActivity {
         textLastUpdate = findViewById(R.id.textLastUpdate);
         buttonGetData = findViewById(R.id.buttonGetData);
 
-        // Map sensor letters to chips
         chipMap.put("T", chipTemperature);
         chipMap.put("H", chipHumidity);
         chipMap.put("L", chipLuminosity);
@@ -135,30 +121,30 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void loadSavedConfig() {
-        String savedIp = prefs.getString(KEY_IP, "");
-        int savedPort = prefs.getInt(KEY_PORT, DEFAULT_PORT);
-        String savedMac = prefs.getString(KEY_MAC, "");
-        editTextIp.setText(savedIp);
-        editTextPort.setText(String.valueOf(savedPort));
-        editTextMac.setText(savedMac);
+        editTextIp.setText(prefs.getString(KEY_IP, ""));
+        editTextPort.setText(String.valueOf(prefs.getInt(KEY_PORT, DEFAULT_PORT)));
+        editTextMac.setText(prefs.getString(KEY_CONTROLLER, ""));
+        passkey = prefs.getString(KEY_PASSKEY, "");
+        controllerId = prefs.getString(KEY_CONTROLLER, "");
+        if (!passkey.isEmpty() && !controllerId.isEmpty()) {
+            textPairingStatus.setText(getString(R.string.status_paired, controllerId));
+            textPairingStatus.setTextColor(getColor(R.color.status_connected));
+        }
     }
 
     private void setupListeners() {
         buttonConnect.setOnClickListener(v -> toggleConnection());
 
-        // Chip tap listeners — build display order by tap sequence
         for (Map.Entry<String, Chip> entry : chipMap.entrySet()) {
             String letter = entry.getKey();
             Chip chip = entry.getValue();
             chip.setOnClickListener(v -> {
                 if (chip.isChecked()) {
-                    // Chip was just checked — add to order
-                    if (!displayOrder.toString().contains(letter)) {
+                    if (displayOrder.indexOf(letter) < 0) {
                         displayOrder.append(letter);
                         updateOrderDisplay();
                     }
                 } else {
-                    // Chip was unchecked — remove from order
                     int idx = displayOrder.indexOf(letter);
                     if (idx >= 0) {
                         displayOrder.deleteCharAt(idx);
@@ -171,11 +157,10 @@ public class MainActivity extends AppCompatActivity {
         buttonResetOrder.setOnClickListener(v -> resetOrder());
         buttonSendOrder.setOnClickListener(v -> sendDisplayOrder());
         buttonGetData.setOnClickListener(v -> requestSensorData());
-
-        buttonInit.setOnClickListener(v -> sendPairing());
-        buttonOpenChat.setOnClickListener(v -> toggleChat());
-        buttonSendMessage.setOnClickListener(v -> sendChatMessage());
+        buttonInit.setOnClickListener(v -> sendInit());
     }
+
+    // ---- Connexion serveur ------------------------------------------------
 
     private void toggleConnection() {
         if (connected) {
@@ -203,50 +188,104 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        // Save config
         prefs.edit().putString(KEY_IP, ip).putInt(KEY_PORT, port).apply();
-
-        // Create UDP client and start listening
-        if (udpClient != null) {
-            udpClient.stopListening();
-        }
         udpClient = new UdpClient(ip, port);
-        udpClient.startListening(LISTEN_PORT, new UdpClient.DataCallback() {
-            @Override
-            public void onDataReceived(String data) {
-                handleIncomingData(data);
-            }
-
-            @Override
-            public void onError(String error) {
-                // Listener error — non-fatal, just log
-            }
-        });
 
         connected = true;
         buttonConnect.setText(R.string.btn_disconnect);
         textStatus.setText(getString(R.string.status_connected, ip, port));
         textStatus.setTextColor(getColor(R.color.status_connected));
-
-        // Disable IP/port editing while connected
         editTextIp.setEnabled(false);
         editTextPort.setEnabled(false);
     }
 
     private void disconnect() {
-        if (udpClient != null) {
-            udpClient.stopListening();
-            udpClient = null;
-        }
-
+        udpClient = null;
         connected = false;
         buttonConnect.setText(R.string.btn_connect);
         textStatus.setText(R.string.status_disconnected);
         textStatus.setTextColor(getColor(R.color.status_disconnected));
-
         editTextIp.setEnabled(true);
         editTextPort.setEnabled(true);
     }
+
+    // ---- Enregistrement / appairage --------------------------------------
+
+    private void sendInit() {
+        if (udpClient == null) {
+            showSnackbar(getString(R.string.error_no_server));
+            return;
+        }
+
+        String pwd = editTextPassword.getText() != null ? editTextPassword.getText().toString() : "";
+        String pwdConfirm = editTextPasswordConfirm.getText() != null ? editTextPasswordConfirm.getText().toString() : "";
+        String ctrl = editTextMac.getText() != null ? editTextMac.getText().toString().trim() : "";
+
+        if (pwd.isEmpty()) {
+            showSnackbar(getString(R.string.error_password_empty));
+            return;
+        }
+        if (!pwd.equals(pwdConfirm)) {
+            showSnackbar(getString(R.string.error_password_mismatch));
+            return;
+        }
+        if (ctrl.isEmpty()) {
+            showSnackbar(getString(R.string.error_mac_empty));
+            return;
+        }
+
+        final String finalPwd = pwd;
+        final String finalCtrl = ctrl;
+
+        udpClient.sendAndReceive("INIT," + finalPwd, new UdpClient.DataCallback() {
+            @Override
+            public void onDataReceived(String data) {
+                if (!data.trim().startsWith("OK")) {
+                    showSnackbar(getString(R.string.error_server, data.trim()));
+                    return;
+                }
+                passkey = finalPwd;
+                controllerId = finalCtrl;
+                prefs.edit()
+                        .putString(KEY_PASSKEY, passkey)
+                        .putString(KEY_CONTROLLER, controllerId)
+                        .apply();
+                textPairingStatus.setText(getString(R.string.status_paired, controllerId));
+                textPairingStatus.setTextColor(getColor(R.color.status_connected));
+                claimSensors(0);
+            }
+
+            @Override
+            public void onError(String error) {
+                showSnackbar(getString(R.string.error_send_failed, error));
+            }
+        });
+    }
+
+    /** Revendique sequentiellement les 4 capteurs via ADD,passkey,sensor_id. */
+    private void claimSensors(int index) {
+        if (index >= SENSOR_IDS.length) {
+            showSnackbar(getString(R.string.success_init));
+            return;
+        }
+        if (udpClient == null) return;
+
+        String sensorId = SENSOR_IDS[index];
+        udpClient.sendAndReceive("ADD," + passkey + "," + sensorId, new UdpClient.DataCallback() {
+            @Override
+            public void onDataReceived(String data) {
+                // "OK" ou "ERROR: Sensor already claimed" — dans les deux cas on continue
+                claimSensors(index + 1);
+            }
+
+            @Override
+            public void onError(String error) {
+                showSnackbar(getString(R.string.error_send_failed, error));
+            }
+        });
+    }
+
+    // ---- Ordre d'affichage OLED ------------------------------------------
 
     private void updateOrderDisplay() {
         if (displayOrder.length() == 0) {
@@ -269,12 +308,17 @@ public class MainActivity extends AppCompatActivity {
             showSnackbar(getString(R.string.error_no_server));
             return;
         }
+        if (controllerId.isEmpty()) {
+            showSnackbar(getString(R.string.error_mac_empty));
+            return;
+        }
         if (displayOrder.length() == 0) {
             showSnackbar(getString(R.string.error_empty_order));
             return;
         }
 
-        udpClient.send(displayOrder.toString(), new UdpClient.SendCallback() {
+        String payload = controllerId + ",CONFIG," + displayOrder;
+        udpClient.send(payload, new UdpClient.SendCallback() {
             @Override
             public void onSuccess() {
                 showSnackbar(getString(R.string.success_send));
@@ -287,16 +331,28 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    // ---- Recuperation des donnees -----------------------------------------
+
     private void requestSensorData() {
         if (udpClient == null) {
             showSnackbar(getString(R.string.error_no_server));
             return;
         }
+        if (passkey.isEmpty()) {
+            showSnackbar(getString(R.string.error_no_passkey));
+            return;
+        }
 
-        udpClient.requestData(new UdpClient.DataCallback() {
+        udpClient.sendAndReceive("GET," + passkey, new UdpClient.DataCallback() {
             @Override
             public void onDataReceived(String data) {
-                updateSensorDisplay(data);
+                String trimmed = data.trim();
+                if (trimmed.startsWith("UNAUTHORIZED") || trimmed.startsWith("ERROR")
+                        || trimmed.startsWith("No data")) {
+                    showSnackbar(getString(R.string.error_server, trimmed));
+                    return;
+                }
+                updateSensorDisplay(trimmed);
             }
 
             @Override
@@ -304,107 +360,10 @@ public class MainActivity extends AppCompatActivity {
                 showSnackbar(getString(R.string.error_send_failed, error));
             }
         });
-    }
-
-    private void handleIncomingData(String data) {
-        String trimmed = data.trim();
-        // Sensor payload looks like {"T":..,"H":..,...} or starts with T:/H:/L:/P:
-        if (trimmed.startsWith("{") || trimmed.matches(".*[THLP]\\s*[:=].*")) {
-            updateSensorDisplay(trimmed);
-        } else if (trimmed.startsWith("MSG|") || trimmed.startsWith("CHAT|")) {
-            appendChat(getString(R.string.chat_received, trimmed.substring(trimmed.indexOf('|') + 1)));
-        } else {
-            // Unknown payload → treat as chat by default
-            appendChat(getString(R.string.chat_received, trimmed));
-        }
-    }
-
-    private void sendPairing() {
-        if (udpClient == null) {
-            showSnackbar(getString(R.string.error_no_server));
-            return;
-        }
-
-        String pwd = editTextPassword.getText() != null ? editTextPassword.getText().toString() : "";
-        String pwdConfirm = editTextPasswordConfirm.getText() != null ? editTextPasswordConfirm.getText().toString() : "";
-        String mac = editTextMac.getText() != null ? editTextMac.getText().toString().trim() : "";
-
-        if (pwd.isEmpty()) {
-            showSnackbar(getString(R.string.error_password_empty));
-            return;
-        }
-        if (!pwd.equals(pwdConfirm)) {
-            showSnackbar(getString(R.string.error_password_mismatch));
-            return;
-        }
-        if (mac.isEmpty()) {
-            showSnackbar(getString(R.string.error_mac_empty));
-            return;
-        }
-
-        prefs.edit().putString(KEY_MAC, mac).apply();
-
-        String payload = "INIT|" + pwd + "|" + mac;
-        udpClient.send(payload, new UdpClient.SendCallback() {
-            @Override
-            public void onSuccess() {
-                paired = true;
-                pairedMac = mac;
-                textPairingStatus.setText(getString(R.string.status_paired, mac));
-                textPairingStatus.setTextColor(getColor(R.color.status_connected));
-                showSnackbar(getString(R.string.success_init));
-            }
-
-            @Override
-            public void onError(String error) {
-                showSnackbar(getString(R.string.error_send_failed, error));
-            }
-        });
-    }
-
-    private void toggleChat() {
-        if (chatContainer.getVisibility() == View.VISIBLE) {
-            chatContainer.setVisibility(View.GONE);
-        } else {
-            chatContainer.setVisibility(View.VISIBLE);
-        }
-    }
-
-    private void sendChatMessage() {
-        if (udpClient == null) {
-            showSnackbar(getString(R.string.error_no_server));
-            return;
-        }
-        String msg = editTextMessage.getText() != null ? editTextMessage.getText().toString().trim() : "";
-        if (msg.isEmpty()) {
-            showSnackbar(getString(R.string.error_empty_message));
-            return;
-        }
-
-        String payload = "MSG|" + (pairedMac.isEmpty() ? "?" : pairedMac) + "|" + msg;
-        udpClient.send(payload, new UdpClient.SendCallback() {
-            @Override
-            public void onSuccess() {
-                appendChat(getString(R.string.chat_sent, msg));
-                editTextMessage.setText("");
-            }
-
-            @Override
-            public void onError(String error) {
-                showSnackbar(getString(R.string.error_send_failed, error));
-            }
-        });
-    }
-
-    private void appendChat(String line) {
-        if (chatHistory.length() > 0) chatHistory.append("\n");
-        chatHistory.append(line);
-        textChatHistory.setText(chatHistory.toString());
-        chatScroll.post(() -> chatScroll.fullScroll(View.FOCUS_DOWN));
     }
 
     private void updateSensorDisplay(String rawData) {
-        SensorData data = SensorData.parse(rawData);
+        SensorData data = SensorData.parseMultiline(rawData);
         textTemperature.setText(data.formatTemperature());
         textHumidity.setText(data.formatHumidity());
         textLuminosity.setText(data.formatLuminosity());
@@ -416,13 +375,5 @@ public class MainActivity extends AppCompatActivity {
 
     private void showSnackbar(String message) {
         Snackbar.make(findViewById(R.id.main), message, Snackbar.LENGTH_SHORT).show();
-    }
-
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
-        if (udpClient != null) {
-            udpClient.stopListening();
-        }
     }
 }

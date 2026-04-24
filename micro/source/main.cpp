@@ -1,6 +1,7 @@
 #include "MicroBit.h"
 #include "nrf.h"
 #include <string.h>
+#include <stdio.h>
 
 extern "C" {
 #include "nrf_ecb.h"
@@ -17,37 +18,37 @@ MicroBitPin P0(MICROBIT_ID_IO_P0, MICROBIT_PIN_P0, PIN_CAPABILITY_DIGITAL_OUT);
 //                             SECURITE
 // =============================================================================
 //
-// Cle AES-128 partagee micro:bit <-> serveur.
-// Derivation cote serveur : zero-padding/troncature du --shared-secret sur 16
-// octets. Ici on embarque directement le resultat pour "groupe67" :
-//     b"groupe67" + 8 octets nuls.
-//
-// Si la passkey cote serveur change, il faut mettre a jour cette table ET
-// re-flasher le micro:bit.
+// Cle AES-128 partagee micro:bit <-> serveur. Zero-padding du --shared-secret
+// sur 16 octets : b"groupe67" + 8 octets nuls.
 static const uint8_t AES_KEY[16] = {
     'g','r','o','u','p','e','6','7',
     0, 0, 0, 0, 0, 0, 0, 0
 };
 
-// Meme valeur au format chaine, utilisee uniquement dans la trame "PAIR|..."
-// pour que le serveur puisse verifier que le device connait bien le secret.
+// Meme valeur au format chaine, utilisee uniquement dans la trame "PAIR|...".
 static const char *SHARED_SECRET = "groupe67";
 
 // Doit matcher le setGroup() de la passerelle.
 static const int RADIO_GROUP = 1;
 
-// -----------------------------------------------------------------------------
-// AES-128-ECB (chiffrement d'un bloc 16 octets) via le HAL officiel du nRF51
-// SDK (cf. micro/source/nrf_ecb.{h,c}, tire de https://git.mob-dev.fr/
-// Schoumi/nrf51-sdk). L'API publique est :
-//     nrf_ecb_init()
-//     nrf_ecb_set_key(key)
-//     nrf_ecb_crypt(dst, src)
-// La cle est installee une seule fois au boot, apres l'init du peripheral.
-// -----------------------------------------------------------------------------
+// =============================================================================
+//                             ETAT PARTAGE
+// =============================================================================
+//
+// Le listener radio et la boucle principale tournent sur le meme thread fiber :
+// pas besoin de verrou, les acces sont serialises entre deux yields.
+
+static ManagedString g_device_id;
+static ManagedString g_display_order("T");  // ordre OLED courant (ex: "TLHP")
+
+static int g_T_centi = 0;     // temperature * 100
+static int g_H_centi = 0;     // humidite   * 100
+static int g_P_hpa   = 0;     // pression en hPa
+static int g_L_level = 0;     // luminosite 0..255 (LED matrix as photodiode)
 
 // -----------------------------------------------------------------------------
-// IV aleatoire via le peripheral RNG materiel (nRF51).
+// AES-128-ECB materiel via le HAL officiel du SDK Nordic
+// (nrf_ecb_init / nrf_ecb_set_key / nrf_ecb_crypt).
 // -----------------------------------------------------------------------------
 
 static void random_iv(uint8_t iv[16]) {
@@ -60,15 +61,12 @@ static void random_iv(uint8_t iv[16]) {
     NRF_RNG->TASKS_STOP = 1;
 }
 
-// -----------------------------------------------------------------------------
-// AES-128-CBC + PKCS7 + hex encode. Sortie = hex(IV || ciphertext).
-// -----------------------------------------------------------------------------
-
+// AES-128-CBC + PKCS7 + hex. Sortie = hex(IV || ciphertext), serial-safe.
 static ManagedString aes_cbc_encrypt_hex(const ManagedString &plain) {
     static const char HEX[] = "0123456789ABCDEF";
 
     int n = plain.length();
-    int pad = 16 - (n % 16);                 // 1..16 (PKCS7)
+    int pad = 16 - (n % 16);                 // PKCS7 : 1..16
     int padded_len = n + pad;
 
     uint8_t *buf = new uint8_t[padded_len];
@@ -81,8 +79,6 @@ static ManagedString aes_cbc_encrypt_hex(const ManagedString &plain) {
     uint8_t prev[16];
     memcpy(prev, iv, 16);
 
-    // CBC : on XOR chaque bloc avec le precedent avant chiffrement.
-    // La cle AES est deja installee dans NRF_ECB au boot (nrf_ecb_set_key).
     for (int off = 0; off < padded_len; off += 16) {
         uint8_t block[16];
         for (int j = 0; j < 16; j++) block[j] = buf[off + j] ^ prev[j];
@@ -90,7 +86,6 @@ static ManagedString aes_cbc_encrypt_hex(const ManagedString &plain) {
         memcpy(prev, buf + off, 16);
     }
 
-    // Sortie : hex(IV || ciphertext).
     int total = 16 + padded_len;
     char *hex = new char[total * 2 + 1];
     for (int i = 0; i < 16; i++) {
@@ -110,7 +105,7 @@ static ManagedString aes_cbc_encrypt_hex(const ManagedString &plain) {
 }
 
 // -----------------------------------------------------------------------------
-// Helpers conversion texte.
+// Conversions texte.
 // -----------------------------------------------------------------------------
 
 static ManagedString id_to_hex(uint32_t v) {
@@ -126,6 +121,74 @@ static ManagedString int_to_str(int v) {
 }
 
 // =============================================================================
+//                             RECEPTION RADIO
+// =============================================================================
+//
+// Format attendu, en clair (la passerelle relaie brut depuis UART) :
+//     <device_id>,CONFIG,<ORDER>
+// Exemple : "5E90D3CB,CONFIG,TLH".
+// Les trames qui ne nous sont pas destinees ou qui ne matchent pas ce format
+// (ex: trames AES chiffrees d'autres objets) sont ignorees silencieusement.
+
+static void on_radio_receive(MicroBitEvent) {
+    ManagedString msg = uBit.radio.datagram.recv();
+    int n = msg.length();
+    if (n == 0) return;
+
+    const char *s = msg.toCharArray();
+
+    // Trouver les deux virgules qui delimitent les 3 segments.
+    int c1 = -1, c2 = -1;
+    for (int i = 0; i < n; i++) {
+        if (s[i] == ',') {
+            if (c1 < 0) c1 = i;
+            else if (c2 < 0) { c2 = i; break; }
+        }
+    }
+    if (c1 < 0 || c2 < 0) return;
+
+    // Segment du milieu doit valoir exactement "CONFIG".
+    int mid_len = c2 - (c1 + 1);
+    if (mid_len != 6 || strncmp(s + c1 + 1, "CONFIG", 6) != 0) return;
+
+    // Segment de tete doit egaler notre device_id.
+    const char *our_id = g_device_id.toCharArray();
+    int our_id_len = (int)strlen(our_id);
+    if (c1 != our_id_len || strncmp(s, our_id, our_id_len) != 0) return;
+
+    // Segment de queue = nouvel ordre (on le stocke tel quel).
+    int tail_len = n - (c2 + 1);
+    if (tail_len <= 0 || tail_len > 8) return;  // borne defensive
+    g_display_order = msg.substring(c2 + 1, tail_len);
+}
+
+// =============================================================================
+//                             AFFICHAGE OLED
+// =============================================================================
+
+static void display_sensor_line(ssd1306 &screen, int line, char code) {
+    char buf[32];
+    switch (code) {
+        case 'T':
+            snprintf(buf, sizeof(buf), "T: %d.%d C",
+                     g_T_centi / 100, (g_T_centi % 100) / 10);
+            break;
+        case 'H':
+            snprintf(buf, sizeof(buf), "H: %d %%", g_H_centi / 100);
+            break;
+        case 'L':
+            snprintf(buf, sizeof(buf), "L: %d lux", g_L_level);
+            break;
+        case 'P':
+            snprintf(buf, sizeof(buf), "P: %d hPa", g_P_hpa);
+            break;
+        default:
+            return;   // caractere inconnu dans l'ordre -> skip
+    }
+    screen.display_line(line, 0, buf);
+}
+
+// =============================================================================
 //                             APPLICATION
 // =============================================================================
 
@@ -134,23 +197,26 @@ int main() {
     uBit.radio.setGroup(RADIO_GROUP);
     uBit.radio.enable();
 
-    // Initialisation du peripheral ECB + installation de la cle AES.
-    // Doit etre fait avant le 1er appel a nrf_ecb_crypt().
+    // Listener radio : reception des commandes CONFIG envoyees par le serveur
+    // a travers la passerelle.
+    uBit.messageBus.listen(MICROBIT_ID_RADIO, MICROBIT_RADIO_EVT_DATAGRAM,
+                           on_radio_receive);
+
+    // Initialisation du peripheral AES.
     nrf_ecb_init();
     nrf_ecb_set_key(AES_KEY);
 
     ssd1306 screen(&uBit, &i2c, &P0);
     bme280 bme(&uBit, &i2c);
 
-    // ID unique du micro:bit (FICR DEVICEID[0]) en hex compact.
     uint32_t serial_nr = microbit_serial_number();
-    ManagedString device_id = id_to_hex(serial_nr);
+    g_device_id = id_to_hex(serial_nr);
 
     // 1. Pairing initial : "PAIR|<secret>|<id>" chiffre AES-128-CBC.
     ManagedString pair_plain = ManagedString("PAIR|")
                                + SHARED_SECRET
                                + ManagedString("|")
-                               + device_id;
+                               + g_device_id;
     uBit.radio.datagram.send(aes_cbc_encrypt_hex(pair_plain));
 
     uint32_t raw_pressure = 0;
@@ -158,27 +224,36 @@ int main() {
     uint16_t raw_humidity = 0;
 
     while (1) {
+        // 1. Lecture des capteurs.
         bme.sensor_read(&raw_pressure, &raw_temp, &raw_humidity);
+        g_T_centi  = bme.compensate_temperature(raw_temp);
+        g_H_centi  = bme.compensate_humidity(raw_humidity);
+        g_P_hpa    = bme.compensate_pressure(raw_pressure) / 100;
+        // LED matrix utilisee comme photodiode (0..255). Ne gene pas l'OLED.
+        g_L_level  = uBit.display.readLightLevel();
 
-        int T_centi = bme.compensate_temperature(raw_temp);
-        int H_centi = bme.compensate_humidity(raw_humidity);
-        int P_hpa   = bme.compensate_pressure(raw_pressure) / 100;
-
-        // 2. Format : "<id>|T:25.3,H:42,P:999"
+        // 2. Emission chiffree "<id>|T:..,H:..,L:..,P:.."
         ManagedString payload =
-            device_id + ManagedString("|")
-            + ManagedString("T:") + int_to_str(T_centi / 100) + ManagedString(".") + int_to_str((T_centi % 100) / 10) + ManagedString(",")
-            + ManagedString("H:") + int_to_str(H_centi / 100) + ManagedString(",")
-            + ManagedString("P:") + int_to_str(P_hpa);
+            g_device_id + ManagedString("|")
+            + ManagedString("T:") + int_to_str(g_T_centi / 100) + ManagedString(".") + int_to_str((g_T_centi % 100) / 10) + ManagedString(",")
+            + ManagedString("H:") + int_to_str(g_H_centi / 100) + ManagedString(",")
+            + ManagedString("L:") + int_to_str(g_L_level) + ManagedString(",")
+            + ManagedString("P:") + int_to_str(g_P_hpa);
 
-        ManagedString cipher = aes_cbc_encrypt_hex(payload);
-        uBit.radio.datagram.send(cipher);
+        uBit.radio.datagram.send(aes_cbc_encrypt_hex(payload));
 
+        // 3. Affichage OLED selon l'ordre courant (controle par le serveur).
         screen.clear();
         screen.display_line(0, 0, "OBJET CONNECTE");
-        screen.display_line(2, 0, "ID:");
-        screen.display_line(3, 0, device_id.toCharArray());
-        screen.display_line(5, 0, "AES-128-CBC -> gw");
+        screen.display_line(1, 0, g_device_id.toCharArray());
+
+        const char *order = g_display_order.toCharArray();
+        int order_len = g_display_order.length();
+        int oled_line = 3;
+        for (int i = 0; i < order_len && oled_line < 8; i++) {
+            display_sensor_line(screen, oled_line, order[i]);
+            oled_line++;
+        }
         screen.update_screen();
 
         uBit.sleep(2000);

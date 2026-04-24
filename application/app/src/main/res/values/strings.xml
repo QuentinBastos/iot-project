@@ -38,9 +38,32 @@
     <string name="last_update">Derniere mise a jour : %1$s</string>
     <string name="last_update_never">Aucune donnee recue</string>
 
+    <!-- Pairing -->
+    <string name="section_pairing">Appairage micro:bit</string>
+    <string name="hint_password">Mot de passe</string>
+    <string name="hint_password_confirm">Confirmer le mot de passe</string>
+    <string name="hint_mac">Adresse MAC du micro:bit</string>
+    <string name="btn_init">INIT</string>
+    <string name="status_paired">Appaire avec %1$s</string>
+    <string name="status_not_paired">Non appaire</string>
+    <string name="error_password_empty">Mot de passe requis</string>
+    <string name="error_password_mismatch">Les mots de passe ne correspondent pas</string>
+    <string name="error_mac_empty">Adresse MAC requise</string>
+    <string name="success_init">Appairage envoye</string>
+
+    <!-- Discussion -->
+    <string name="section_discussion">Discussion</string>
+    <string name="hint_message">Message a envoyer</string>
+    <string name="btn_send_message">Envoyer</string>
+    <string name="btn_open_chat">Discuter</string>
+    <string name="chat_empty">Aucun message</string>
+    <string name="chat_sent">Moi : %1$s</string>
+    <string name="chat_received">Recu : %1$s</string>
+
     <!-- Errors -->
     <string name="error_no_server">Veuillez configurer le serveur d\'abord</string>
     <string name="error_empty_order">Veuillez selectionner au moins un capteur</string>
+    <string name="error_empty_message">Message vide</string>
     <string name="error_send_failed">Erreur d\'envoi : %1$s</string>
     <string name="success_send">Ordre envoye</string>
 </resources>

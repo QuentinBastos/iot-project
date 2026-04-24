@@ -1,4 +1,4 @@
-# 🌐 IoT Gateway Server
+# 🌐 IoT Server
 
 A high-performance, modular Python bridge connecting **micro:bit sensor networks** (via Serial UART) with **mobile applications** (via UDP). This server handles real-time data persistence, device configuration, and multi-user sensor management.
 
@@ -18,7 +18,7 @@ The project follows a **Layered Domain-Driven Design** to ensure scalability and
 
 ### 1. 📂 `core/` (The Brain)
 - **`models.py`**: Immutable dataclasses representing the system state (`SensorReading`, `ConfigCommand`).
-- **`service.py`**: Central `GatewayService` that coordinates interactions without knowing about specific IO implementations.
+- **`service.py`**: Central `ServerService` that coordinates interactions without knowing about specific IO implementations.
 
 ### 2. 📂 `data/` (The Persistence Logic)
 - **`database.py`**: SQLite connection pooling and schema management.
@@ -33,8 +33,8 @@ The project follows a **Layered Domain-Driven Design** to ensure scalability and
 - **`serial_server.py`**: Robust serial bridge for hardware interaction.
 
 ### 5. 📂 `storage/` (The Vault)
-- **`gateway_data.db`**: Primary SQLite database for sensor readings and configurations.
-- **`gateway.log`**: Centralized application logs for diagnostics.
+- **`server_data.db`**: Primary SQLite database for sensor readings and configurations.
+- **`server.log`**: Centralized application logs for diagnostics.
 
 ---
 
@@ -62,7 +62,7 @@ pip install -r requirements.txt
 
 ## 📋 usage Guide
 
-### Running the Gateway
+### Running the Server
 The gateway can be configured via command-line arguments. By default, it looks for data in the `storage/` directory.
 
 ```powershell
@@ -74,7 +74,7 @@ python main.py --serial_port COM3 --udp_port 10000
 | `--serial_port` | The COM port or /dev/ path for the micro:bit | `COM3` |
 | `--baudrate` | Serial communication speed | `115200` |
 | `--udp_port` | The port to listen for UDP packets | `10000` |
-| `--db` | Path to the SQLite database file | `storage/gateway_data.db` |
+| `--db` | Path to the SQLite database file | `storage/server_data.db` |
 | `--serial-retry` | Seconds to wait before retrying serial connection | `5` |
 
 ---

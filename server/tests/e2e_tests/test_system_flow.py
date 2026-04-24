@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 
 from data.database import Database
 from data.repository import IoTRepository
-from core.service import GatewayService
+from core.service import ServerService
 from infrastructure.udp_server import UDPServer
 from infrastructure.serial_server import SerialServer
 
@@ -24,7 +24,7 @@ class TestSystemFlowE2E(unittest.TestCase):
         self.db_fd, self.db_path = tempfile.mkstemp(suffix=".db")
         self.db = Database(self.db_path)
         self.repo = IoTRepository(self.db)
-        self.service = GatewayService(self.repo)
+        self.service = ServerService(self.repo)
         
         # Setup Serial Mock
         self.mock_serial = MagicMock()
@@ -118,3 +118,4 @@ class TestSystemFlowE2E(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+

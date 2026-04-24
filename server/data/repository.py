@@ -7,7 +7,7 @@ from .database import Database
 from core.models import SensorReading, ConfigCommand
 
 logger = logging.getLogger("IoTRepository")
-STATIC_SALT = "iot_gateway_static_salt_v2"
+STATIC_SALT = "iot_server_static_salt_v2"
 
 @functools.lru_cache(maxsize=128)
 def hash_passkey(passkey: str) -> str:
@@ -117,3 +117,4 @@ class IoTRepository:
                 SELECT sensor_id FROM user_sensors WHERE passkey_hash = ?
             ''', (passkey_hash,))
             return [row[0] for row in cursor.fetchall()]
+

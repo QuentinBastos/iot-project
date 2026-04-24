@@ -9,10 +9,10 @@ from protocol.events import (
     RemoveSensorEvent, DataRequestEvent, ConfigCommandEvent, SensorReadingEvent
 )
 
-logger = logging.getLogger("GatewayService")
+logger = logging.getLogger("ServerService")
 
-class GatewayService:
-    """Core business logic service for the IoT Gateway."""
+class ServerService:
+    """Core business logic service for the IoT Server."""
 
     def __init__(self, repository: IoTRepository):
         self.repository = repository
@@ -25,11 +25,11 @@ class GatewayService:
 
     def start(self) -> None:
         self.running = True
-        logger.info("Gateway Service started.")
+        logger.info("Server Service started.")
 
     def stop(self) -> None:
         self.running = False
-        logger.info("Gateway Service stopped.")
+        logger.info("Server Service stopped.")
 
     def handle_event(self, event: AppEvent) -> Optional[str]:
         """Dispatches events to specialized handlers."""
@@ -71,7 +71,6 @@ class GatewayService:
         logger.info(f"Config saved for {config.controller_id}: {clean_order}")
 
         if self._command_sender:
-            # We use the raw format expected by the gateway
             command_str = f"{config.controller_id},CONFIG,{clean_order}"
             self._command_sender(command_str)
         else:

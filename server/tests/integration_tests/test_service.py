@@ -10,19 +10,19 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 
 from data.database import Database
 from data.repository import IoTRepository
-from core.service import GatewayService
+from core.service import ServerService
 from core.models import SensorReading, ConfigCommand
 from protocol.events import (
     RegisterUserEvent, AddSensorEvent, DataRequestEvent, 
     ConfigCommandEvent, SensorReadingEvent
 )
 
-class TestGatewayServiceIntegration(unittest.TestCase):
+class TestServerServiceIntegration(unittest.TestCase):
     def setUp(self):
         self.db_fd, self.db_path = tempfile.mkstemp(suffix=".db")
         self.db = Database(self.db_path)
         self.repo = IoTRepository(self.db)
-        self.service = GatewayService(self.repo)
+        self.service = ServerService(self.repo)
         self.service.start()
         
         self.passkey = "user123"
@@ -90,3 +90,4 @@ class TestGatewayServiceIntegration(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+

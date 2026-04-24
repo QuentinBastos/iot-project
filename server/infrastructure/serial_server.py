@@ -4,15 +4,15 @@ import threading
 import logging
 import time
 from typing import Optional, Any, Callable
-from core.service import GatewayService
+from core.service import ServerService
 from protocol.codec import ProtocolCodec
 
 logger = logging.getLogger("SerialServer")
 
 class SerialServer(threading.Thread):
-    """Bridge for UART serial communication, integrated with GatewayService."""
+    """Bridge for UART serial communication, integrated with ServerService."""
 
-    def __init__(self, service: GatewayService, port: str = "COM3", baudrate: int = 115200, timeout: int = 1, retry_delay: Optional[int] = None):
+    def __init__(self, service: ServerService, port: str = "COM3", baudrate: int = 115200, timeout: int = 1, retry_delay: Optional[int] = None):
         super().__init__()
         self.service = service
         self.port = port
@@ -37,7 +37,7 @@ class SerialServer(threading.Thread):
                     try:
                         raw_line = raw_line_bytes.decode('utf-8').strip()
                         if raw_line:
-                            logger.info(f"Serial In: {raw_line}")
+                            logger.debug(f"Serial In from {self.port}: '{raw_line}'")
                             event = ProtocolCodec.decode(raw_line)
                             if event:
                                 self.service.handle_event(event)
@@ -65,7 +65,7 @@ class SerialServer(threading.Thread):
             try:
                 msg = f"{command_str}\n"
                 self.serial_conn.write(msg.encode('utf-8'))
-                logger.info(f"Serial Out: {command_str}")
+                logger.debug(f"Serial Out to {self.port}: '{command_str}'")
             except Exception as e:
                 logger.error(f"Failed to write to serial: {e}")
         else:
@@ -80,3 +80,4 @@ class SerialServer(threading.Thread):
             self.serial_conn.close()
             self.serial_conn = None
             logger.info("Serial connection closed.")
+

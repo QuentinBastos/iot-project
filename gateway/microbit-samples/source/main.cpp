@@ -23,7 +23,7 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 */
 
-##include "MicroBit.h"
+#include "MicroBit.h"
 
 MicroBit uBit;
 
@@ -57,7 +57,8 @@ int main()
     // 1. Configuration de la Radio (RF 2.4GHz)
     uBit.radio.enable();
     // ATTENTION : L'objet connecté et la passerelle doivent être sur le même groupe radio !
-    uBit.radio.setGroup(1); 
+    // Groupe 67 = groupe alloué à notre équipe
+    uBit.radio.setGroup(67);
 
     // 2. Configuration de la communication série (UART via USB)
     uBit.serial.baud(115200);

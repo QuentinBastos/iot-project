@@ -1,6 +1,11 @@
 #include "MicroBit.h"
 #include "nrf.h"
 #include <string.h>
+
+extern "C" {
+#include "nrf_ecb.h"
+}
+
 #include "ssd1306.h"
 #include "bme280.h"
 
@@ -31,27 +36,15 @@ static const char *SHARED_SECRET = "groupe67";
 // Doit matcher le setGroup() de la passerelle.
 static const int RADIO_GROUP = 1;
 
-// Tampon aligne 4 octets pour le peripheral ECB (obligatoire sur nRF51).
-static uint8_t ecb_buf[48] __attribute__((aligned(4)));
-
 // -----------------------------------------------------------------------------
-// AES-128-ECB (chiffrement d'un bloc 16 octets) via le peripheral materiel.
+// AES-128-ECB (chiffrement d'un bloc 16 octets) via le HAL officiel du nRF51
+// SDK (cf. micro/source/nrf_ecb.{h,c}, tire de https://git.mob-dev.fr/
+// Schoumi/nrf51-sdk). L'API publique est :
+//     nrf_ecb_init()
+//     nrf_ecb_set_key(key)
+//     nrf_ecb_crypt(dst, src)
+// La cle est installee une seule fois au boot, apres l'init du peripheral.
 // -----------------------------------------------------------------------------
-
-static void aes128_ecb_encrypt_block(const uint8_t key[16],
-                                     const uint8_t in[16],
-                                     uint8_t out[16]) {
-    memcpy(ecb_buf + 0,  key, 16);   // KEY
-    memcpy(ecb_buf + 16, in,  16);   // CLEARTEXT
-
-    NRF_ECB->ECBDATAPTR    = (uint32_t)ecb_buf;
-    NRF_ECB->EVENTS_ENDECB = 0;
-    NRF_ECB->TASKS_STARTECB = 1;
-    while (NRF_ECB->EVENTS_ENDECB == 0) { /* spin ~7 cycles */ }
-    NRF_ECB->EVENTS_ENDECB = 0;
-
-    memcpy(out, ecb_buf + 32, 16);   // CIPHERTEXT
-}
 
 // -----------------------------------------------------------------------------
 // IV aleatoire via le peripheral RNG materiel (nRF51).
@@ -89,10 +82,11 @@ static ManagedString aes_cbc_encrypt_hex(const ManagedString &plain) {
     memcpy(prev, iv, 16);
 
     // CBC : on XOR chaque bloc avec le precedent avant chiffrement.
+    // La cle AES est deja installee dans NRF_ECB au boot (nrf_ecb_set_key).
     for (int off = 0; off < padded_len; off += 16) {
         uint8_t block[16];
         for (int j = 0; j < 16; j++) block[j] = buf[off + j] ^ prev[j];
-        aes128_ecb_encrypt_block(AES_KEY, block, buf + off);
+        nrf_ecb_crypt(buf + off, block);
         memcpy(prev, buf + off, 16);
     }
 
@@ -139,6 +133,11 @@ int main() {
     uBit.init();
     uBit.radio.setGroup(RADIO_GROUP);
     uBit.radio.enable();
+
+    // Initialisation du peripheral ECB + installation de la cle AES.
+    // Doit etre fait avant le 1er appel a nrf_ecb_crypt().
+    nrf_ecb_init();
+    nrf_ecb_set_key(AES_KEY);
 
     ssd1306 screen(&uBit, &i2c, &P0);
     bme280 bme(&uBit, &i2c);

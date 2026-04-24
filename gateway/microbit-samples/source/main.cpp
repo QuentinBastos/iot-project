@@ -58,7 +58,7 @@ int main()
     uBit.radio.enable();
     // ATTENTION : L'objet connecté et la passerelle doivent être sur le même groupe radio !
     // Groupe 67 = groupe alloué à notre équipe
-    uBit.radio.setGroup(67);
+    uBit.radio.setGroup(1);
 
     // 2. Configuration de la communication série (UART via USB)
     uBit.serial.baud(115200);

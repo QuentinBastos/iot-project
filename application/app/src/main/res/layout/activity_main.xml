@@ -166,6 +166,13 @@
                         style="@style/Widget.Material3.Button.TextButton" />
                 </LinearLayout>
 
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/hint_controller_select_help"
+                    android:textAppearance="?attr/textAppearanceBodySmall"
+                    android:layout_marginBottom="8dp" />
+
                 <Spinner
                     android:id="@+id/spinnerControllers"
                     android:layout_width="match_parent"
@@ -237,46 +244,37 @@
                     android:layout_height="wrap_content"
                     android:text="@string/section_display_order"
                     android:textAppearance="?attr/textAppearanceTitleMedium"
-                    android:layout_marginBottom="12dp" />
+                    android:layout_marginBottom="8dp" />
 
-                <com.google.android.material.chip.ChipGroup
+                <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginBottom="8dp"
-                    app:singleSelection="false">
+                    android:text="@string/hint_display_order_help"
+                    android:textAppearance="?attr/textAppearanceBodySmall"
+                    android:layout_marginBottom="12dp" />
 
-                    <com.google.android.material.chip.Chip
-                        android:id="@+id/chipTemperature"
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:layout_marginBottom="8dp">
+
+                    <Spinner
+                        android:id="@+id/spinnerSensor"
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:layout_height="wrap_content"
+                        android:minHeight="48dp" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/buttonAddToOrder"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="@string/chip_temperature"
-                        style="@style/Widget.Material3.Chip.Filter"
-                        android:checkable="true" />
-
-                    <com.google.android.material.chip.Chip
-                        android:id="@+id/chipHumidity"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="@string/chip_humidity"
-                        style="@style/Widget.Material3.Chip.Filter"
-                        android:checkable="true" />
-
-                    <com.google.android.material.chip.Chip
-                        android:id="@+id/chipLuminosity"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="@string/chip_luminosity"
-                        style="@style/Widget.Material3.Chip.Filter"
-                        android:checkable="true" />
-
-                    <com.google.android.material.chip.Chip
-                        android:id="@+id/chipPressure"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="@string/chip_pressure"
-                        style="@style/Widget.Material3.Chip.Filter"
-                        android:checkable="true" />
-                </com.google.android.material.chip.ChipGroup>
+                        android:layout_marginStart="8dp"
+                        android:text="@string/btn_add_to_order"
+                        style="@style/Widget.Material3.Button.TonalButton" />
+                </LinearLayout>
 
                 <TextView
                     android:id="@+id/textDisplayOrder"

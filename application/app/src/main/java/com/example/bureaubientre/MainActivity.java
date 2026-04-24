@@ -15,7 +15,6 @@ import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
 
 import com.google.android.material.button.MaterialButton;
-import com.google.android.material.chip.Chip;
 import com.google.android.material.snackbar.Snackbar;
 import com.google.android.material.textfield.TextInputEditText;
 
@@ -61,9 +60,9 @@ public class MainActivity extends AppCompatActivity {
     private MaterialButton buttonAddController, buttonRemoveController, buttonRefreshControllers;
 
     // Display order views
-    private Chip chipTemperature, chipHumidity, chipLuminosity, chipPressure;
+    private Spinner spinnerSensor;
     private TextView textDisplayOrder;
-    private MaterialButton buttonSendOrder, buttonResetOrder;
+    private MaterialButton buttonAddToOrder, buttonSendOrder, buttonResetOrder;
 
     // Sensor data views
     private TextView textTemperature, textHumidity, textLuminosity, textPressure;
@@ -72,9 +71,12 @@ public class MainActivity extends AppCompatActivity {
 
     // State
     private final StringBuilder displayOrder = new StringBuilder();
-    private final Map<String, Chip> chipMap = new LinkedHashMap<>();
+    /** Letter -> full human-readable label, ordered like the spinner. */
+    private final Map<String, String> sensorLabels = new LinkedHashMap<>();
+    private final List<String> sensorLabelList = new ArrayList<>();
     private final List<String> controllers = new ArrayList<>();
     private ArrayAdapter<String> controllersAdapter;
+    private ArrayAdapter<String> sensorsAdapter;
     private UdpClient udpClient;
     private boolean connected = false;
     private String passkey = "";
@@ -92,10 +94,21 @@ public class MainActivity extends AppCompatActivity {
         });
 
         prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        initSensorCatalog();
         initViews();
         setupControllersSpinner();
+        setupSensorSpinner();
         loadSavedConfig();
         setupListeners();
+    }
+
+    /** Mapping lettre <-> nom complet (ordre stable, source de verite pour le Spinner). */
+    private void initSensorCatalog() {
+        sensorLabels.put("T", getString(R.string.sensor_temperature));
+        sensorLabels.put("H", getString(R.string.sensor_humidity));
+        sensorLabels.put("L", getString(R.string.sensor_luminosity));
+        sensorLabels.put("P", getString(R.string.sensor_pressure));
+        sensorLabelList.addAll(sensorLabels.values());
     }
 
     private void initViews() {
@@ -113,11 +126,9 @@ public class MainActivity extends AppCompatActivity {
         buttonRemoveController = findViewById(R.id.buttonRemoveController);
         buttonRefreshControllers = findViewById(R.id.buttonRefreshControllers);
 
-        chipTemperature = findViewById(R.id.chipTemperature);
-        chipHumidity = findViewById(R.id.chipHumidity);
-        chipLuminosity = findViewById(R.id.chipLuminosity);
-        chipPressure = findViewById(R.id.chipPressure);
+        spinnerSensor = findViewById(R.id.spinnerSensor);
         textDisplayOrder = findViewById(R.id.textDisplayOrder);
+        buttonAddToOrder = findViewById(R.id.buttonAddToOrder);
         buttonSendOrder = findViewById(R.id.buttonSendOrder);
         buttonResetOrder = findViewById(R.id.buttonResetOrder);
 
@@ -127,11 +138,12 @@ public class MainActivity extends AppCompatActivity {
         textPressure = findViewById(R.id.textPressure);
         textLastUpdate = findViewById(R.id.textLastUpdate);
         buttonGetData = findViewById(R.id.buttonGetData);
+    }
 
-        chipMap.put("T", chipTemperature);
-        chipMap.put("H", chipHumidity);
-        chipMap.put("L", chipLuminosity);
-        chipMap.put("P", chipPressure);
+    private void setupSensorSpinner() {
+        sensorsAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, sensorLabelList);
+        sensorsAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spinnerSensor.setAdapter(sensorsAdapter);
     }
 
     private void setupControllersSpinner() {
@@ -161,25 +173,7 @@ public class MainActivity extends AppCompatActivity {
     private void setupListeners() {
         buttonConnect.setOnClickListener(v -> toggleConnection());
 
-        for (Map.Entry<String, Chip> entry : chipMap.entrySet()) {
-            String letter = entry.getKey();
-            Chip chip = entry.getValue();
-            chip.setOnClickListener(v -> {
-                if (chip.isChecked()) {
-                    if (displayOrder.indexOf(letter) < 0) {
-                        displayOrder.append(letter);
-                        updateOrderDisplay();
-                    }
-                } else {
-                    int idx = displayOrder.indexOf(letter);
-                    if (idx >= 0) {
-                        displayOrder.deleteCharAt(idx);
-                        updateOrderDisplay();
-                    }
-                }
-            });
-        }
-
+        buttonAddToOrder.setOnClickListener(v -> addSelectedSensorToOrder());
         buttonResetOrder.setOnClickListener(v -> resetOrder());
         buttonSendOrder.setOnClickListener(v -> sendDisplayOrder());
         buttonGetData.setOnClickListener(v -> requestSensorData());
@@ -187,6 +181,23 @@ public class MainActivity extends AppCompatActivity {
         buttonAddController.setOnClickListener(v -> addController());
         buttonRemoveController.setOnClickListener(v -> removeController());
         buttonRefreshControllers.setOnClickListener(v -> refreshControllers());
+    }
+
+    private void addSelectedSensorToOrder() {
+        Object selected = spinnerSensor.getSelectedItem();
+        if (selected == null) return;
+        String letter = letterFor(selected.toString());
+        if (letter == null) return;
+        if (displayOrder.indexOf(letter) >= 0) return;   // deja present
+        displayOrder.append(letter);
+        updateOrderDisplay();
+    }
+
+    private String letterFor(String fullLabel) {
+        for (Map.Entry<String, String> entry : sensorLabels.entrySet()) {
+            if (entry.getValue().equals(fullLabel)) return entry.getKey();
+        }
+        return null;
     }
 
     // ---- Connexion serveur + auto-register --------------------------------
@@ -390,16 +401,22 @@ public class MainActivity extends AppCompatActivity {
     private void updateOrderDisplay() {
         if (displayOrder.length() == 0) {
             textDisplayOrder.setText(R.string.label_order_empty);
-        } else {
-            textDisplayOrder.setText(getString(R.string.label_order, displayOrder.toString()));
+            return;
         }
+        StringBuilder pretty = new StringBuilder();
+        String sep = getString(R.string.arrow_separator);
+        for (int i = 0; i < displayOrder.length(); i++) {
+            String letter = String.valueOf(displayOrder.charAt(i));
+            String label = sensorLabels.get(letter);
+            if (label == null) continue;
+            if (pretty.length() > 0) pretty.append(sep);
+            pretty.append(label);
+        }
+        textDisplayOrder.setText(getString(R.string.label_order, pretty.toString()));
     }
 
     private void resetOrder() {
         displayOrder.setLength(0);
-        for (Chip chip : chipMap.values()) {
-            chip.setChecked(false);
-        }
         updateOrderDisplay();
     }
 

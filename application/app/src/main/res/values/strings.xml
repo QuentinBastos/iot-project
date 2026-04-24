@@ -12,16 +12,20 @@
 
     <!-- Display order -->
     <string name="section_display_order">Ordre d\'affichage OLED</string>
+    <string name="hint_display_order_help">Selectionnez un capteur puis Ajouter pour construire l\'ordre.</string>
+    <string name="hint_sensor_select">Capteur a ajouter</string>
+    <string name="btn_add_to_order">Ajouter</string>
     <string name="btn_send_order">Envoyer l\'ordre</string>
     <string name="btn_reset_order">Reset</string>
     <string name="label_order">Ordre : %1$s</string>
-    <string name="label_order_empty">Appuyez sur les capteurs dans l\'ordre souhaite</string>
+    <string name="label_order_empty">Aucun capteur selectionne</string>
+    <string name="arrow_separator"> → </string>
 
-    <!-- Sensor chips -->
-    <string name="chip_temperature">Temperature</string>
-    <string name="chip_humidity">Humidite</string>
-    <string name="chip_luminosity">Luminosite</string>
-    <string name="chip_pressure">Pression</string>
+    <!-- Sensor labels -->
+    <string name="sensor_temperature">Temperature</string>
+    <string name="sensor_humidity">Humidite</string>
+    <string name="sensor_luminosity">Luminosite</string>
+    <string name="sensor_pressure">Pression</string>
 
     <!-- Sensor data -->
     <string name="section_sensor_data">Donnees capteurs</string>
@@ -44,6 +48,7 @@
 
     <!-- Controllers -->
     <string name="section_controllers">Micro:bit associes</string>
+    <string name="hint_controller_select_help">Selectionnez le micro:bit a utiliser : les ordres d\'affichage et la lecture des donnees ci-dessous s\'appliqueront a celui-ci.</string>
     <string name="hint_controller_id">ID du micro:bit a ajouter</string>
     <string name="btn_add_controller">Ajouter</string>
     <string name="btn_remove_controller">Supprimer</string>

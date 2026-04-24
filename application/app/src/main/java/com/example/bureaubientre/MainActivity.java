@@ -2,6 +2,10 @@ package com.example.bureaubientre;
 
 import android.content.SharedPreferences;
 import android.os.Bundle;
+import android.view.View;
+import android.widget.AdapterView;
+import android.widget.ArrayAdapter;
+import android.widget.Spinner;
 import android.widget.TextView;
 
 import androidx.activity.EdgeToEdge;
@@ -16,40 +20,45 @@ import com.google.android.material.snackbar.Snackbar;
 import com.google.android.material.textfield.TextInputEditText;
 
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
 /**
  * Protocole UDP avec le serveur (voir server/protocol/codec.py) :
- *   INIT,<passkey>                   -> enregistre l'utilisateur
- *   ADD,<passkey>,<sensor_id>        -> revendique un capteur
- *   GET,<passkey>                    -> demande les dernieres valeurs
- *   <controller_id>,CONFIG,<ordre>   -> ordre d'affichage OLED de l'objet
- * Reponse GET : "ctrl,sensor,value\n..." (multi-lignes).
+ *   INIT,<passkey>                           enregistre / login
+ *   LIST,<passkey>                           liste des controllers de l'utilisateur
+ *   ADD,<passkey>,<controller_id>            revendique un micro:bit
+ *   REMOVE,<passkey>,<controller_id>         libere un micro:bit + purge data
+ *   GET,<passkey>,<controller_id>            donnees du micro:bit selectionne
+ *   <controller_id>,CONFIG,<ordre>           ordre d'affichage OLED
+ * Reponse LIST : "ctrl1\nctrl2\n..."
+ * Reponse GET  : "ctrl,sensor,value\n..." (multi-lignes).
  */
 public class MainActivity extends AppCompatActivity {
 
     private static final String PREFS_NAME = "server_config";
     private static final String KEY_IP = "ip";
     private static final String KEY_PORT = "port";
-    private static final String KEY_CONTROLLER = "controller_id";
     private static final String KEY_PASSKEY = "passkey";
+    private static final String KEY_SELECTED_CONTROLLER = "selected_controller";
     private static final int DEFAULT_PORT = 10000;
-
-    // Identifiants de capteurs revendiques via ADD
-    private static final String[] SENSOR_IDS = {"T", "H", "L", "P"};
 
     // Server config views
     private TextInputEditText editTextIp, editTextPort;
+    private TextInputEditText editTextPassword, editTextPasswordConfirm;
     private MaterialButton buttonConnect;
     private TextView textStatus;
 
-    // Pairing views
-    private TextInputEditText editTextPassword, editTextPasswordConfirm, editTextMac;
-    private MaterialButton buttonInit;
-    private TextView textPairingStatus;
+    // Controllers views
+    private Spinner spinnerControllers;
+    private TextView textControllersStatus;
+    private TextInputEditText editTextControllerId;
+    private MaterialButton buttonAddController, buttonRemoveController, buttonRefreshControllers;
 
     // Display order views
     private Chip chipTemperature, chipHumidity, chipLuminosity, chipPressure;
@@ -64,10 +73,11 @@ public class MainActivity extends AppCompatActivity {
     // State
     private final StringBuilder displayOrder = new StringBuilder();
     private final Map<String, Chip> chipMap = new LinkedHashMap<>();
+    private final List<String> controllers = new ArrayList<>();
+    private ArrayAdapter<String> controllersAdapter;
     private UdpClient udpClient;
     private boolean connected = false;
     private String passkey = "";
-    private String controllerId = "";
     private SharedPreferences prefs;
 
     @Override
@@ -83,6 +93,7 @@ public class MainActivity extends AppCompatActivity {
 
         prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
         initViews();
+        setupControllersSpinner();
         loadSavedConfig();
         setupListeners();
     }
@@ -90,14 +101,17 @@ public class MainActivity extends AppCompatActivity {
     private void initViews() {
         editTextIp = findViewById(R.id.editTextIp);
         editTextPort = findViewById(R.id.editTextPort);
+        editTextPassword = findViewById(R.id.editTextPassword);
+        editTextPasswordConfirm = findViewById(R.id.editTextPasswordConfirm);
         buttonConnect = findViewById(R.id.buttonConnect);
         textStatus = findViewById(R.id.textStatus);
 
-        editTextPassword = findViewById(R.id.editTextPassword);
-        editTextPasswordConfirm = findViewById(R.id.editTextPasswordConfirm);
-        editTextMac = findViewById(R.id.editTextMac);
-        buttonInit = findViewById(R.id.buttonInit);
-        textPairingStatus = findViewById(R.id.textPairingStatus);
+        spinnerControllers = findViewById(R.id.spinnerControllers);
+        textControllersStatus = findViewById(R.id.textControllersStatus);
+        editTextControllerId = findViewById(R.id.editTextControllerId);
+        buttonAddController = findViewById(R.id.buttonAddController);
+        buttonRemoveController = findViewById(R.id.buttonRemoveController);
+        buttonRefreshControllers = findViewById(R.id.buttonRefreshControllers);
 
         chipTemperature = findViewById(R.id.chipTemperature);
         chipHumidity = findViewById(R.id.chipHumidity);
@@ -120,16 +134,28 @@ public class MainActivity extends AppCompatActivity {
         chipMap.put("P", chipPressure);
     }
 
+    private void setupControllersSpinner() {
+        controllersAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, controllers);
+        controllersAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spinnerControllers.setAdapter(controllersAdapter);
+        spinnerControllers.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int pos, long id) {
+                String selected = (String) parent.getItemAtPosition(pos);
+                if (selected != null) {
+                    prefs.edit().putString(KEY_SELECTED_CONTROLLER, selected).apply();
+                }
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) { }
+        });
+    }
+
     private void loadSavedConfig() {
         editTextIp.setText(prefs.getString(KEY_IP, ""));
         editTextPort.setText(String.valueOf(prefs.getInt(KEY_PORT, DEFAULT_PORT)));
-        editTextMac.setText(prefs.getString(KEY_CONTROLLER, ""));
         passkey = prefs.getString(KEY_PASSKEY, "");
-        controllerId = prefs.getString(KEY_CONTROLLER, "");
-        if (!passkey.isEmpty() && !controllerId.isEmpty()) {
-            textPairingStatus.setText(getString(R.string.status_paired, controllerId));
-            textPairingStatus.setTextColor(getColor(R.color.status_connected));
-        }
     }
 
     private void setupListeners() {
@@ -157,10 +183,13 @@ public class MainActivity extends AppCompatActivity {
         buttonResetOrder.setOnClickListener(v -> resetOrder());
         buttonSendOrder.setOnClickListener(v -> sendDisplayOrder());
         buttonGetData.setOnClickListener(v -> requestSensorData());
-        buttonInit.setOnClickListener(v -> sendInit());
+
+        buttonAddController.setOnClickListener(v -> addController());
+        buttonRemoveController.setOnClickListener(v -> removeController());
+        buttonRefreshControllers.setOnClickListener(v -> refreshControllers());
     }
 
-    // ---- Connexion serveur ------------------------------------------------
+    // ---- Connexion serveur + auto-register --------------------------------
 
     private void toggleConnection() {
         if (connected) {
@@ -173,6 +202,8 @@ public class MainActivity extends AppCompatActivity {
     private void connect() {
         String ip = editTextIp.getText() != null ? editTextIp.getText().toString().trim() : "";
         String portStr = editTextPort.getText() != null ? editTextPort.getText().toString().trim() : "";
+        String pwd = editTextPassword.getText() != null ? editTextPassword.getText().toString() : "";
+        String pwdConfirm = editTextPasswordConfirm.getText() != null ? editTextPasswordConfirm.getText().toString() : "";
 
         if (ip.isEmpty()) {
             showSnackbar(getString(R.string.error_no_server));
@@ -188,15 +219,49 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
+        if (pwd.isEmpty()) {
+            showSnackbar(getString(R.string.error_password_empty));
+            return;
+        }
+        if (!pwd.equals(pwdConfirm)) {
+            showSnackbar(getString(R.string.error_password_mismatch));
+            return;
+        }
+
         prefs.edit().putString(KEY_IP, ip).putInt(KEY_PORT, port).apply();
         udpClient = new UdpClient(ip, port);
 
-        connected = true;
-        buttonConnect.setText(R.string.btn_disconnect);
-        textStatus.setText(getString(R.string.status_connected, ip, port));
-        textStatus.setTextColor(getColor(R.color.status_connected));
-        editTextIp.setEnabled(false);
-        editTextPort.setEnabled(false);
+        final String finalPwd = pwd;
+        final String finalIp = ip;
+        final int finalPort = port;
+
+        udpClient.sendAndReceive("INIT," + finalPwd, new UdpClient.DataCallback() {
+            @Override
+            public void onDataReceived(String data) {
+                if (!data.trim().startsWith("OK")) {
+                    showSnackbar(getString(R.string.error_server, data.trim()));
+                    return;
+                }
+                passkey = finalPwd;
+                prefs.edit().putString(KEY_PASSKEY, passkey).apply();
+
+                connected = true;
+                buttonConnect.setText(R.string.btn_disconnect);
+                textStatus.setText(getString(R.string.status_connected, finalIp, finalPort));
+                textStatus.setTextColor(getColor(R.color.status_connected));
+                editTextIp.setEnabled(false);
+                editTextPort.setEnabled(false);
+                editTextPassword.setEnabled(false);
+                editTextPasswordConfirm.setEnabled(false);
+
+                refreshControllers();
+            }
+
+            @Override
+            public void onError(String error) {
+                showSnackbar(getString(R.string.error_send_failed, error));
+            }
+        });
     }
 
     private void disconnect() {
@@ -207,52 +272,42 @@ public class MainActivity extends AppCompatActivity {
         textStatus.setTextColor(getColor(R.color.status_disconnected));
         editTextIp.setEnabled(true);
         editTextPort.setEnabled(true);
+        editTextPassword.setEnabled(true);
+        editTextPasswordConfirm.setEnabled(true);
+
+        controllers.clear();
+        controllersAdapter.notifyDataSetChanged();
+        textControllersStatus.setText(R.string.label_no_controllers);
     }
 
-    // ---- Enregistrement / appairage --------------------------------------
+    // ---- Gestion des controllers ------------------------------------------
 
-    private void sendInit() {
-        if (udpClient == null) {
-            showSnackbar(getString(R.string.error_no_server));
-            return;
-        }
+    private void refreshControllers() {
+        if (udpClient == null || passkey.isEmpty()) return;
 
-        String pwd = editTextPassword.getText() != null ? editTextPassword.getText().toString() : "";
-        String pwdConfirm = editTextPasswordConfirm.getText() != null ? editTextPasswordConfirm.getText().toString() : "";
-        String ctrl = editTextMac.getText() != null ? editTextMac.getText().toString().trim() : "";
-
-        if (pwd.isEmpty()) {
-            showSnackbar(getString(R.string.error_password_empty));
-            return;
-        }
-        if (!pwd.equals(pwdConfirm)) {
-            showSnackbar(getString(R.string.error_password_mismatch));
-            return;
-        }
-        if (ctrl.isEmpty()) {
-            showSnackbar(getString(R.string.error_mac_empty));
-            return;
-        }
-
-        final String finalPwd = pwd;
-        final String finalCtrl = ctrl;
-
-        udpClient.sendAndReceive("INIT," + finalPwd, new UdpClient.DataCallback() {
+        udpClient.sendAndReceive("LIST," + passkey, new UdpClient.DataCallback() {
             @Override
             public void onDataReceived(String data) {
-                if (!data.trim().startsWith("OK")) {
-                    showSnackbar(getString(R.string.error_server, data.trim()));
+                String trimmed = data.trim();
+                if (trimmed.startsWith("UNAUTHORIZED") || trimmed.startsWith("ERROR")) {
+                    showSnackbar(getString(R.string.error_server, trimmed));
                     return;
                 }
-                passkey = finalPwd;
-                controllerId = finalCtrl;
-                prefs.edit()
-                        .putString(KEY_PASSKEY, passkey)
-                        .putString(KEY_CONTROLLER, controllerId)
-                        .apply();
-                textPairingStatus.setText(getString(R.string.status_paired, controllerId));
-                textPairingStatus.setTextColor(getColor(R.color.status_connected));
-                claimSensors(0);
+                controllers.clear();
+                if (!trimmed.isEmpty()) {
+                    controllers.addAll(Arrays.asList(trimmed.split("\\r?\\n")));
+                }
+                controllersAdapter.notifyDataSetChanged();
+
+                if (controllers.isEmpty()) {
+                    textControllersStatus.setText(R.string.label_no_controllers);
+                } else {
+                    textControllersStatus.setText(getString(R.string.status_controllers_count, controllers.size()));
+                    // Restore previously selected controller if present
+                    String last = prefs.getString(KEY_SELECTED_CONTROLLER, null);
+                    int idx = last != null ? controllers.indexOf(last) : -1;
+                    spinnerControllers.setSelection(idx >= 0 ? idx : 0);
+                }
             }
 
             @Override
@@ -262,20 +317,29 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    /** Revendique sequentiellement les 4 capteurs via ADD,passkey,sensor_id. */
-    private void claimSensors(int index) {
-        if (index >= SENSOR_IDS.length) {
-            showSnackbar(getString(R.string.success_init));
+    private void addController() {
+        if (udpClient == null || passkey.isEmpty()) {
+            showSnackbar(getString(R.string.error_no_passkey));
             return;
         }
-        if (udpClient == null) return;
+        String ctrl = editTextControllerId.getText() != null
+                ? editTextControllerId.getText().toString().trim() : "";
+        if (ctrl.isEmpty()) {
+            showSnackbar(getString(R.string.error_controller_empty));
+            return;
+        }
 
-        String sensorId = SENSOR_IDS[index];
-        udpClient.sendAndReceive("ADD," + passkey + "," + sensorId, new UdpClient.DataCallback() {
+        udpClient.sendAndReceive("ADD," + passkey + "," + ctrl, new UdpClient.DataCallback() {
             @Override
             public void onDataReceived(String data) {
-                // "OK" ou "ERROR: Sensor already claimed" — dans les deux cas on continue
-                claimSensors(index + 1);
+                String trimmed = data.trim();
+                if (!trimmed.startsWith("OK")) {
+                    showSnackbar(getString(R.string.error_server, trimmed));
+                    return;
+                }
+                editTextControllerId.setText("");
+                showSnackbar(getString(R.string.success_controller_added));
+                refreshControllers();
             }
 
             @Override
@@ -283,6 +347,42 @@ public class MainActivity extends AppCompatActivity {
                 showSnackbar(getString(R.string.error_send_failed, error));
             }
         });
+    }
+
+    private void removeController() {
+        if (udpClient == null || passkey.isEmpty()) {
+            showSnackbar(getString(R.string.error_no_passkey));
+            return;
+        }
+        String selected = selectedController();
+        if (selected == null) {
+            showSnackbar(getString(R.string.error_no_controller_selected));
+            return;
+        }
+
+        udpClient.sendAndReceive("REMOVE," + passkey + "," + selected, new UdpClient.DataCallback() {
+            @Override
+            public void onDataReceived(String data) {
+                String trimmed = data.trim();
+                if (!trimmed.startsWith("OK")) {
+                    showSnackbar(getString(R.string.error_server, trimmed));
+                    return;
+                }
+                showSnackbar(getString(R.string.success_controller_removed));
+                clearSensorValues();
+                refreshControllers();
+            }
+
+            @Override
+            public void onError(String error) {
+                showSnackbar(getString(R.string.error_send_failed, error));
+            }
+        });
+    }
+
+    private String selectedController() {
+        Object item = spinnerControllers.getSelectedItem();
+        return item != null ? item.toString() : null;
     }
 
     // ---- Ordre d'affichage OLED ------------------------------------------
@@ -308,8 +408,9 @@ public class MainActivity extends AppCompatActivity {
             showSnackbar(getString(R.string.error_no_server));
             return;
         }
-        if (controllerId.isEmpty()) {
-            showSnackbar(getString(R.string.error_mac_empty));
+        String selected = selectedController();
+        if (selected == null) {
+            showSnackbar(getString(R.string.error_no_controller_selected));
             return;
         }
         if (displayOrder.length() == 0) {
@@ -317,7 +418,7 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        String payload = controllerId + ",CONFIG," + displayOrder;
+        String payload = selected + ",CONFIG," + displayOrder;
         udpClient.send(payload, new UdpClient.SendCallback() {
             @Override
             public void onSuccess() {
@@ -331,7 +432,7 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    // ---- Recuperation des donnees -----------------------------------------
+    // ---- Recuperation des donnees (filtre par controller) -----------------
 
     private void requestSensorData() {
         if (udpClient == null) {
@@ -342,14 +443,20 @@ public class MainActivity extends AppCompatActivity {
             showSnackbar(getString(R.string.error_no_passkey));
             return;
         }
+        String selected = selectedController();
+        if (selected == null) {
+            showSnackbar(getString(R.string.error_no_controller_selected));
+            return;
+        }
 
-        udpClient.sendAndReceive("GET," + passkey, new UdpClient.DataCallback() {
+        udpClient.sendAndReceive("GET," + passkey + "," + selected, new UdpClient.DataCallback() {
             @Override
             public void onDataReceived(String data) {
                 String trimmed = data.trim();
                 if (trimmed.startsWith("UNAUTHORIZED") || trimmed.startsWith("ERROR")
                         || trimmed.startsWith("No data")) {
                     showSnackbar(getString(R.string.error_server, trimmed));
+                    clearSensorValues();
                     return;
                 }
                 updateSensorDisplay(trimmed);
@@ -371,6 +478,15 @@ public class MainActivity extends AppCompatActivity {
 
         String time = new SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(new Date());
         textLastUpdate.setText(getString(R.string.last_update, time));
+    }
+
+    private void clearSensorValues() {
+        String placeholder = getString(R.string.value_placeholder);
+        textTemperature.setText(placeholder);
+        textHumidity.setText(placeholder);
+        textLuminosity.setText(placeholder);
+        textPressure.setText(placeholder);
+        textLastUpdate.setText(R.string.last_update_never);
     }
 
     private void showSnackbar(String message) {

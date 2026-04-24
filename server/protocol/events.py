@@ -12,20 +12,26 @@ class RegisterUserEvent(AppEvent):
     passkey: str
 
 @dataclass(frozen=True)
-class AddSensorEvent(AppEvent):
+class AddControllerEvent(AppEvent):
     passkey: str
-    sensor_id: str
+    controller_id: str
     timestamp: Optional[int] = None
 
 @dataclass(frozen=True)
-class RemoveSensorEvent(AppEvent):
+class RemoveControllerEvent(AppEvent):
+    """Supprime le lien passkey<->controller ET toutes ses donnees stockees."""
     passkey: str
-    sensor_id: str
+    controller_id: str
     timestamp: Optional[int] = None
+
+@dataclass(frozen=True)
+class ListControllersEvent(AppEvent):
+    passkey: str
 
 @dataclass(frozen=True)
 class DataRequestEvent(AppEvent):
     passkey: str
+    controller_id: Optional[str] = None
     timestamp: Optional[int] = None
 
 @dataclass(frozen=True)

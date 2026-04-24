@@ -38,24 +38,31 @@
     <string name="last_update">Derniere mise a jour : %1$s</string>
     <string name="last_update_never">Aucune donnee recue</string>
 
-    <!-- Pairing / compte serveur -->
-    <string name="section_pairing">Compte serveur &amp; objet</string>
+    <!-- Passkey (dans le bloc Serveur) -->
     <string name="hint_password">Passkey</string>
     <string name="hint_password_confirm">Confirmer la passkey</string>
-    <string name="hint_mac">ID du micro:bit objet (controller)</string>
-    <string name="btn_init">INIT &amp; AJOUTER</string>
-    <string name="status_paired">Enregistre, controller %1$s</string>
-    <string name="status_not_paired">Non enregistre</string>
-    <string name="error_password_empty">Passkey requise</string>
-    <string name="error_password_mismatch">Les passkeys ne correspondent pas</string>
-    <string name="error_mac_empty">ID du micro:bit requis</string>
-    <string name="success_init">Enregistre sur le serveur</string>
+
+    <!-- Controllers -->
+    <string name="section_controllers">Micro:bit associes</string>
+    <string name="hint_controller_id">ID du micro:bit a ajouter</string>
+    <string name="btn_add_controller">Ajouter</string>
+    <string name="btn_remove_controller">Supprimer</string>
+    <string name="btn_refresh_controllers">Rafraichir la liste</string>
+    <string name="label_selected_controller">Selectionne : %1$s</string>
+    <string name="label_no_controllers">Aucun micro:bit associe a cette passkey</string>
+    <string name="status_controllers_count">%1$d micro:bit(s) associe(s)</string>
 
     <!-- Errors -->
     <string name="error_no_server">Veuillez vous connecter au serveur d\'abord</string>
-    <string name="error_no_passkey">Passkey non enregistree. Faites INIT d\'abord.</string>
+    <string name="error_no_passkey">Passkey non enregistree. Connectez-vous d\'abord.</string>
+    <string name="error_password_empty">Passkey requise</string>
+    <string name="error_password_mismatch">Les passkeys ne correspondent pas</string>
+    <string name="error_controller_empty">ID du micro:bit requis</string>
+    <string name="error_no_controller_selected">Selectionnez un micro:bit d\'abord</string>
     <string name="error_empty_order">Veuillez selectionner au moins un capteur</string>
     <string name="error_send_failed">Erreur d\'envoi : %1$s</string>
     <string name="error_server">Reponse serveur : %1$s</string>
     <string name="success_send">Ordre envoye</string>
+    <string name="success_controller_added">Micro:bit ajoute</string>
+    <string name="success_controller_removed">Micro:bit supprime + donnees purgees</string>
 </resources>

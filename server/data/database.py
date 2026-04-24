@@ -51,11 +51,20 @@ class Database:
                 )
             ''')
             cursor.execute('''
-                CREATE TABLE IF NOT EXISTS user_sensors (
+                CREATE TABLE IF NOT EXISTS user_controllers (
                     passkey_hash TEXT NOT NULL,
-                    sensor_id TEXT NOT NULL,
-                    PRIMARY KEY (passkey_hash, sensor_id),
+                    controller_id TEXT NOT NULL,
+                    PRIMARY KEY (passkey_hash, controller_id),
                     FOREIGN KEY (passkey_hash) REFERENCES users(passkey_hash)
                 )
             ''')
-
+            # Migration douce : recopier depuis l'ancienne table si elle existe
+            cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='user_sensors'"
+            )
+            if cursor.fetchone():
+                cursor.execute('''
+                    INSERT OR IGNORE INTO user_controllers (passkey_hash, controller_id)
+                    SELECT passkey_hash, sensor_id FROM user_sensors
+                ''')
+                cursor.execute("DROP TABLE user_sensors")

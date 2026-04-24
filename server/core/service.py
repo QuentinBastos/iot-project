@@ -1,7 +1,8 @@
 import logging
 import math
 import time
-from typing import Optional, Callable
+from datetime import datetime, timedelta
+from typing import Optional, Callable, Dict
 from core.models import SensorReading, SensorSnapshot, ConfigCommand
 from data.repository import IoTRepository, hash_passkey
 from protocol.events import (
@@ -13,6 +14,12 @@ from protocol.events import (
 
 logger = logging.getLogger("ServerService")
 
+# Intervalle minimal entre deux snapshots reellement stockes pour un meme
+# controller. Le micro:bit emet ~toutes les 2 secondes, on ne garde qu'un
+# snapshot sur 5 pour ne pas saturer la base.
+SNAPSHOT_MIN_INTERVAL = timedelta(seconds=10)
+
+
 class ServerService:
     """Core business logic service for the IoT Server."""
 
@@ -20,6 +27,8 @@ class ServerService:
         self.repository = repository
         self.running = False
         self._command_sender: Optional[Callable[[str], None]] = None
+        # Dernier insert effectif par controller -> throttling cote service.
+        self._last_snapshot_at: Dict[str, datetime] = {}
 
     def set_command_sender(self, sender_callback: Callable[[str], None]) -> None:
         """Sets the callback for outgoing commands (e.g., to serial)."""
@@ -45,8 +54,8 @@ class ServerService:
                 return self._handle_list_controllers(passkey)
             case DataRequestEvent(passkey, controller_id, timestamp):
                 return self._handle_data_request(passkey, controller_id, timestamp)
-            case HistoryRequestEvent(passkey, controller_id, limit):
-                return self._handle_history_request(passkey, controller_id, limit)
+            case HistoryRequestEvent(passkey, controller_id, days):
+                return self._handle_history_request(passkey, controller_id, days)
             case ConfigCommandEvent(config):
                 return self._handle_config_command(config)
             case SensorSnapshotEvent(snapshot):
@@ -71,9 +80,9 @@ class ServerService:
             logger.warning(f"Invalid sensor value: {reading.value}")
 
     def _handle_sensor_snapshot(self, snapshot: SensorSnapshot) -> None:
-        """Stocke un snapshot multi-capteurs en une seule ligne dans ``readings``."""
-        # Rejet defensif : si tous les champs capteurs sont incoherents, on ne
-        # stocke rien (evite de polluer la table avec des lignes 100% NULL).
+        """Stocke un snapshot multi-capteurs en une seule ligne dans ``readings``,
+        avec throttling : un snapshot par controller toutes les 10 secondes max."""
+
         def _clean(v):
             if v is None:
                 return None
@@ -95,6 +104,20 @@ class ServerService:
                 f"Snapshot all-null for {snapshot.controller_id}, dropped")
             return
 
+        # Throttling : on n'ecrit que si 10s se sont ecoulees depuis le dernier
+        # insert pour ce controller. Les trames intermediaires sont perdues
+        # pour l'historique, ce qui est acceptable (la temperature, l'humidite
+        # et la pression evoluent lentement).
+        last = self._last_snapshot_at.get(cleaned.controller_id)
+        now = cleaned.timestamp
+        if last is not None and (now - last) < SNAPSHOT_MIN_INTERVAL:
+            logger.debug(
+                f"Snapshot throttled for {cleaned.controller_id} "
+                f"({(now - last).total_seconds():.1f}s since last)"
+            )
+            return
+
+        self._last_snapshot_at[cleaned.controller_id] = now
         self.repository.insert_snapshot(cleaned)
         logger.info(
             f"Snapshot stored: {cleaned.controller_id} "
@@ -189,29 +212,38 @@ class ServerService:
         return "\n".join(f"{r[0]},{r[1]},{r[2]}" for r in readings)
 
     def _handle_history_request(self, passkey: str, controller_id: str,
-                                limit: int) -> str:
+                                days: int) -> str:
         if not controller_id:
             return "ERROR: Missing controller_id"
         h = hash_passkey(passkey)
         if not self.repository.is_user_valid(h):
             return "UNAUTHORIZED"
 
-        rows = self.repository.get_history_for_controller(h, controller_id, limit)
+        rows = self.repository.get_daily_aggregates_for_controller(
+            h, controller_id, days
+        )
         if rows is None:
             return "UNAUTHORIZED"
         if not rows:
             return "No data available"
 
-        # Format : une ligne par snapshot, plus recent d'abord.
-        #   timestamp,temperature,humidity,luminosity,pressure
-        # Les champs absents sont rendus comme chaine vide.
+        # Format (une ligne par jour, plus recent d'abord) :
+        #   day,t_avg,t_min,t_max,h_avg,h_min,h_max,l_avg,l_min,l_max,
+        #   p_avg,p_min,p_max,samples
+        # Les cellules vides (ex: L absente) sont rendues en chaine vide.
         def _fmt(v):
-            return "" if v is None else f"{v}"
+            return "" if v is None else f"{v:.2f}"
 
-        lines = [
-            f"{row[5]},{_fmt(row[1])},{_fmt(row[2])},{_fmt(row[3])},{_fmt(row[4])}"
-            for row in rows
-        ]
+        lines = []
+        for r in rows:
+            lines.append(",".join([
+                r[0],
+                _fmt(r[1]), _fmt(r[2]), _fmt(r[3]),
+                _fmt(r[4]), _fmt(r[5]), _fmt(r[6]),
+                _fmt(r[7]), _fmt(r[8]), _fmt(r[9]),
+                _fmt(r[10]), _fmt(r[11]), _fmt(r[12]),
+                str(r[13]),
+            ]))
         return "\n".join(lines)
 
     def _is_timestamp_valid(self, ts: int) -> bool:

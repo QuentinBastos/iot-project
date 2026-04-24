@@ -615,6 +615,13 @@
                     android:textAppearance="?attr/textAppearanceBodySmall"
                     android:layout_marginBottom="8dp" />
 
+                <Spinner
+                    android:id="@+id/spinnerHistoryFilter"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="8dp"
+                    android:minHeight="48dp" />
+
                 <ScrollView
                     android:layout_width="match_parent"
                     android:layout_height="260dp"

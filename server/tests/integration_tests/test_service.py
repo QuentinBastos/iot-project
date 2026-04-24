@@ -136,25 +136,36 @@ class TestServerServiceIntegration(unittest.TestCase):
         self.assertEqual(self.repo.get_configuration("MC01"), "TLH")
         mock_sender.assert_called_with("MC01,CONFIG,TLH")
 
-    def test_history_request_returns_snapshots(self):
+    def test_history_request_returns_daily_aggregates(self):
+        """HISTORY retourne min/max/moyenne par jour, pas les snapshots bruts."""
+        import datetime as _dt
         self._register_and_claim("MC01")
-        self.service.handle_event(SensorSnapshotEvent(
-            snapshot=SensorSnapshot(controller_id="MC01", temperature=20.0, humidity=40.0)
+
+        # Deux snapshots AUJOURD'HUI : le throttling memoire ne filtre pas
+        # deux appels successifs si on force des timestamps espaces de >10s.
+        # Le test atteint directement le repository pour controler l'aggregation
+        # sans dependre du throttling du service.
+        now = _dt.datetime.now()
+        self.repo.insert_snapshot(SensorSnapshot(
+            controller_id="MC01", temperature=20.0, humidity=40.0, timestamp=now
         ))
-        self.service.handle_event(SensorSnapshotEvent(
-            snapshot=SensorSnapshot(controller_id="MC01", temperature=21.5, humidity=41.0,
-                                    luminosity=300.0, pressure=1013.0)
+        self.repo.insert_snapshot(SensorSnapshot(
+            controller_id="MC01", temperature=30.0, humidity=50.0, timestamp=now,
         ))
 
         resp = self.service.handle_event(HistoryRequestEvent(
-            passkey=self.passkey, controller_id="MC01", limit=10,
+            passkey=self.passkey, controller_id="MC01", days=7,
         ))
+        # Une seule ligne (1 journee agregee) : day,Tavg,Tmin,Tmax,Havg,...,samples
         lines = resp.split("\n")
-        self.assertEqual(len(lines), 2)
-        # Plus recent d'abord.
-        self.assertIn("21.5", lines[0])
-        self.assertIn("1013.0", lines[0])
-        self.assertIn("20.0", lines[1])
+        self.assertEqual(len(lines), 1)
+        parts = lines[0].split(",")
+        # 1 day + 12 stats + 1 count = 14 colonnes
+        self.assertEqual(len(parts), 14)
+        self.assertEqual(parts[1], "25.00")  # T avg = (20+30)/2
+        self.assertEqual(parts[2], "20.00")  # T min
+        self.assertEqual(parts[3], "30.00")  # T max
+        self.assertEqual(parts[-1], "2")      # samples
 
     def test_history_request_unauthorized(self):
         self.service.handle_event(RegisterUserEvent(passkey=self.passkey))
@@ -162,6 +173,38 @@ class TestServerServiceIntegration(unittest.TestCase):
             passkey=self.passkey, controller_id="NOT_MINE",
         ))
         self.assertEqual(resp, "UNAUTHORIZED")
+
+    def test_snapshot_throttling_10s(self):
+        """Deux snapshots espaces de moins de 10s -> un seul insert en base."""
+        import datetime as _dt
+        self._register_and_claim("MC01")
+
+        t0 = _dt.datetime(2026, 4, 24, 12, 0, 0)
+        self.service.handle_event(SensorSnapshotEvent(
+            snapshot=SensorSnapshot(controller_id="MC01", temperature=20.0, timestamp=t0)
+        ))
+        # 5s plus tard -> ignoree
+        self.service.handle_event(SensorSnapshotEvent(
+            snapshot=SensorSnapshot(
+                controller_id="MC01", temperature=21.0,
+                timestamp=t0 + _dt.timedelta(seconds=5),
+            )
+        ))
+        # 11s plus tard -> acceptee
+        self.service.handle_event(SensorSnapshotEvent(
+            snapshot=SensorSnapshot(
+                controller_id="MC01", temperature=22.0,
+                timestamp=t0 + _dt.timedelta(seconds=11),
+            )
+        ))
+        history = self.repo.get_history_for_controller(
+            __import__('data.repository', fromlist=['hash_passkey'])
+            .hash_passkey(self.passkey),
+            "MC01", limit=10,
+        )
+        self.assertEqual(len(history), 2)
+        values = sorted(row[1] for row in history)
+        self.assertEqual(values, [20.0, 22.0])
 
     def test_timestamp_validation(self):
         self.service.handle_event(RegisterUserEvent(passkey=self.passkey))

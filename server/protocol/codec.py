@@ -110,11 +110,11 @@ class ProtocolCodec:
                 case ["LIST", passkey]:
                     return ListControllersEvent(passkey=passkey)
 
-                case ["HISTORY", passkey, controller_id, limit]:
+                case ["HISTORY", passkey, controller_id, days]:
                     return HistoryRequestEvent(
                         passkey=passkey,
                         controller_id=controller_id,
-                        limit=int(limit),
+                        days=int(days),
                     )
 
                 case ["HISTORY", passkey, controller_id]:

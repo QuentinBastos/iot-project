@@ -146,6 +146,8 @@ class IoTRepository:
         """Les ``limit`` derniers snapshots d'un controller, plus recent d'abord.
 
         Retourne None si le controller n'appartient pas a l'utilisateur.
+        Conserve pour les outils / tests bas niveau (la route UDP HISTORY
+        passe desormais par ``get_daily_aggregates_for_controller``).
         """
         if not self.user_owns_controller(passkey_hash, controller_id):
             return None
@@ -158,6 +160,45 @@ class IoTRepository:
                 "ORDER BY timestamp DESC, id DESC LIMIT ?",
                 (controller_id, limit),
             )
+            return cursor.fetchall()
+
+    # Colonnes retournees par get_daily_aggregates_for_controller, dans l'ordre :
+    AGGREGATE_COLUMNS = (
+        "day,"
+        "t_avg,t_min,t_max,"
+        "h_avg,h_min,h_max,"
+        "l_avg,l_min,l_max,"
+        "p_avg,p_min,p_max,"
+        "samples"
+    )
+
+    def get_daily_aggregates_for_controller(
+        self, passkey_hash: str, controller_id: str, days: int = 7
+    ) -> Optional[List[Tuple]]:
+        """Aggregats min/max/moyenne par jour sur les ``days`` derniers jours.
+
+        Retourne une liste de tuples (cf. ``AGGREGATE_COLUMNS``), plus recent
+        en premier. None si le controller n'appartient pas a l'utilisateur.
+        """
+        if not self.user_owns_controller(passkey_hash, controller_id):
+            return None
+        days = max(1, min(days, 365))
+        with self.db.connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT
+                    DATE(timestamp)        AS day,
+                    AVG(temperature), MIN(temperature), MAX(temperature),
+                    AVG(humidity),    MIN(humidity),    MAX(humidity),
+                    AVG(luminosity),  MIN(luminosity),  MAX(luminosity),
+                    AVG(pressure),    MIN(pressure),    MAX(pressure),
+                    COUNT(*)
+                FROM readings
+                WHERE controller_id = ?
+                  AND DATE(timestamp) >= DATE('now', ?)
+                GROUP BY DATE(timestamp)
+                ORDER BY day DESC
+            ''', (controller_id, f"-{days - 1} days"))
             return cursor.fetchall()
 
     # ------------------------------------------------------------------

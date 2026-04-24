@@ -72,8 +72,15 @@ public class MainActivity extends AppCompatActivity {
     // History views
     private MaterialButton buttonLoadHistory;
     private TextView textHistory, textHistoryHint;
+    private Spinner spinnerHistoryFilter;
 
-    private static final int HISTORY_LIMIT = 50;
+    private static final int HISTORY_DAYS = 7;
+    // Dernier payload recu du serveur (pour re-rendu lors d'un changement de filtre).
+    private String lastHistoryRaw = "";
+
+    // Code interne du capteur actuellement mis en avant dans l'historique
+    // ("", "T", "H", "L", "P"). "" = tous les capteurs.
+    private String historyFilterCode = "";
 
     // State
     private final StringBuilder displayOrder = new StringBuilder();
@@ -104,6 +111,7 @@ public class MainActivity extends AppCompatActivity {
         initViews();
         setupControllersSpinner();
         setupSensorSpinner();
+        setupHistoryFilterSpinner();
         loadSavedConfig();
         setupListeners();
     }
@@ -148,7 +156,36 @@ public class MainActivity extends AppCompatActivity {
         buttonLoadHistory = findViewById(R.id.buttonLoadHistory);
         textHistory = findViewById(R.id.textHistory);
         textHistoryHint = findViewById(R.id.textHistoryHint);
-        textHistoryHint.setText(getString(R.string.history_limit_hint, HISTORY_LIMIT));
+        spinnerHistoryFilter = findViewById(R.id.spinnerHistoryFilter);
+        textHistoryHint.setText(getString(R.string.history_limit_hint, HISTORY_DAYS));
+    }
+
+    private void setupHistoryFilterSpinner() {
+        // Liste alignee entre libelles visibles et codes courts T/H/L/P ("" = all).
+        List<String> labels = Arrays.asList(
+                getString(R.string.history_filter_all),
+                getString(R.string.history_filter_temp),
+                getString(R.string.history_filter_humidity),
+                getString(R.string.history_filter_luminosity),
+                getString(R.string.history_filter_pressure));
+        final String[] codes = {"", "T", "H", "L", "P"};
+
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this,
+                android.R.layout.simple_spinner_item, labels);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spinnerHistoryFilter.setAdapter(adapter);
+        spinnerHistoryFilter.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int pos, long id) {
+                historyFilterCode = codes[pos];
+                if (!lastHistoryRaw.isEmpty()) {
+                    textHistory.setText(formatHistoryLines(lastHistoryRaw));
+                }
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) { }
+        });
     }
 
     private void setupSensorSpinner() {
@@ -509,7 +546,7 @@ public class MainActivity extends AppCompatActivity {
         textLastUpdate.setText(getString(R.string.last_update, time));
     }
 
-    // ---- Historique --------------------------------------------------------
+    // ---- Historique (aggregats journaliers) ------------------------------
 
     private void requestHistory() {
         if (udpClient == null) {
@@ -526,7 +563,7 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        String req = "HISTORY," + passkey + "," + selected + "," + HISTORY_LIMIT;
+        String req = "HISTORY," + passkey + "," + selected + "," + HISTORY_DAYS;
         udpClient.sendAndReceive(req, new UdpClient.DataCallback() {
             @Override
             public void onDataReceived(String data) {
@@ -534,8 +571,10 @@ public class MainActivity extends AppCompatActivity {
                 if (trimmed.startsWith("UNAUTHORIZED") || trimmed.startsWith("ERROR")
                         || trimmed.startsWith("No data")) {
                     textHistory.setText(trimmed);
+                    lastHistoryRaw = "";
                     return;
                 }
+                lastHistoryRaw = trimmed;
                 textHistory.setText(formatHistoryLines(trimmed));
             }
 
@@ -546,31 +585,46 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    /** Serveur: "timestamp,T,H,L,P\n..." -> colonnes alignees en monospace. */
+    /**
+     * Transforme la reponse aggregee (une ligne par jour) en bloc lisible.
+     * Format serveur :
+     *   day,t_avg,t_min,t_max,h_avg,h_min,h_max,l_avg,l_min,l_max,p_avg,p_min,p_max,samples
+     * Le filtre du spinner (``historyFilterCode``) restreint l'affichage a un
+     * seul capteur si selectionne.
+     */
     private String formatHistoryLines(String raw) {
         String[] lines = raw.split("\\r?\\n");
         if (lines.length == 0) return getString(R.string.history_empty);
 
-        StringBuilder sb = new StringBuilder(getString(R.string.history_header))
-                .append('\n');
+        StringBuilder sb = new StringBuilder();
         for (String line : lines) {
             String[] parts = line.split(",", -1);
-            if (parts.length < 5) continue;
-            // Raccourci timestamp : garder "HH:MM:SS" (on coupe la date + ms).
-            String ts = parts[0];
-            int spaceIdx = ts.indexOf(' ');
-            if (spaceIdx >= 0) ts = ts.substring(spaceIdx + 1);
-            int dotIdx = ts.indexOf('.');
-            if (dotIdx >= 0) ts = ts.substring(0, dotIdx);
+            if (parts.length < 14) continue;
 
-            sb.append(String.format(Locale.getDefault(), "%-8s %5s %5s %5s %5s%n",
-                    ts,
-                    shortNum(parts[1]),
-                    shortNum(parts[2]),
-                    shortNum(parts[3]),
-                    shortNum(parts[4])));
+            String day = parts[0];
+            String samples = parts[13];
+
+            sb.append(getString(R.string.history_day_header, day, samples)).append('\n');
+            appendStatIfMatch(sb, "T", "Temp ", parts[1], parts[2], parts[3]);
+            appendStatIfMatch(sb, "H", "Hum  ", parts[4], parts[5], parts[6]);
+            appendStatIfMatch(sb, "L", "Lum  ", parts[7], parts[8], parts[9]);
+            appendStatIfMatch(sb, "P", "Pres ", parts[10], parts[11], parts[12]);
+            sb.append('\n');
         }
         return sb.length() == 0 ? getString(R.string.history_empty) : sb.toString();
+    }
+
+    /**
+     * Ajoute une ligne "moy X min Y max Z" si :
+     *   - le filtre est "" (tous les capteurs) ou matche ``code``
+     *   - et la moyenne est disponible (cellule non vide).
+     */
+    private void appendStatIfMatch(StringBuilder sb, String code, String label,
+                                   String avg, String min, String max) {
+        if (!historyFilterCode.isEmpty() && !historyFilterCode.equals(code)) return;
+        if (avg == null || avg.isEmpty()) return;
+        sb.append(getString(R.string.history_stat_line, label,
+                shortNum(avg), shortNum(min), shortNum(max))).append('\n');
     }
 
     private String shortNum(String raw) {

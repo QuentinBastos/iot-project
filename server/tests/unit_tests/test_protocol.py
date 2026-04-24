@@ -94,14 +94,14 @@ class TestProtocolCodec(unittest.TestCase):
     # ---- decode_json_sensor_batch ----
 
     def test_decode_history_request(self):
-        event = ProtocolCodec.decode("HISTORY,pass123,MC01,100")
+        event = ProtocolCodec.decode("HISTORY,pass123,MC01,14")
         self.assertIsInstance(event, HistoryRequestEvent)
         self.assertEqual(event.controller_id, "MC01")
-        self.assertEqual(event.limit, 100)
+        self.assertEqual(event.days, 14)
 
         event2 = ProtocolCodec.decode("HISTORY,pass123,MC01")
         self.assertIsInstance(event2, HistoryRequestEvent)
-        self.assertEqual(event2.limit, 50)  # defaut
+        self.assertEqual(event2.days, 7)  # defaut
 
     def test_json_batch_produces_single_snapshot(self):
         events = ProtocolCodec.decode_json_sensor_batch(

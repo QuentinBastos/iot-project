@@ -55,10 +55,11 @@ class SensorSnapshotEvent(AppEvent):
 
 @dataclass(frozen=True)
 class HistoryRequestEvent(AppEvent):
-    """Demande d'historique pour un micro:bit particulier.
+    """Demande d'historique aggrege pour un micro:bit particulier.
 
-    ``limit`` borne le nombre de snapshots retournes (defaut 50, max 500).
+    Retourne un resume min/max/moyenne par jour sur les ``days`` derniers
+    jours (defaut 7, clampe 1..365 par le repository).
     """
     passkey: str
     controller_id: str
-    limit: int = 50
+    days: int = 7

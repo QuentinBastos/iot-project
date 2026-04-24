@@ -28,11 +28,17 @@
     <string name="sensor_pressure">Pression</string>
 
     <!-- Sensor history -->
-    <string name="section_history">Historique capteurs</string>
+    <string name="section_history">Historique capteurs (stats journalieres)</string>
     <string name="btn_load_history">Charger l\'historique</string>
-    <string name="history_limit_hint">Derniers %1$d enregistrements du micro:bit selectionne</string>
+    <string name="history_limit_hint">Moyenne / min / max par jour sur les %1$d derniers jours</string>
     <string name="history_empty">Aucune donnee historique</string>
-    <string name="history_header">Date           T     H     L     P</string>
+    <string name="history_filter_all">Tous les capteurs</string>
+    <string name="history_filter_temp">Temperature</string>
+    <string name="history_filter_humidity">Humidite</string>
+    <string name="history_filter_luminosity">Luminosite</string>
+    <string name="history_filter_pressure">Pression</string>
+    <string name="history_day_header">%1$s (%2$s mesures)</string>
+    <string name="history_stat_line">   %1$s  moy %2$s  min %3$s  max %4$s</string>
 
     <!-- Sensor data -->
     <string name="section_sensor_data">Donnees capteurs</string>

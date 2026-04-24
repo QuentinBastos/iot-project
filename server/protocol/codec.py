@@ -1,5 +1,6 @@
+import json
 import logging
-from typing import Optional
+from typing import List, Optional
 from core.models import SensorReading, ConfigCommand
 from .events import (
     AppEvent, RegisterUserEvent, AddControllerEvent,
@@ -8,6 +9,9 @@ from .events import (
 )
 
 logger = logging.getLogger("ProtocolCodec")
+
+# Cles de capteurs reconnues dans un payload JSON venant du micro:bit.
+_JSON_SENSOR_KEYS = {"T", "H", "L", "P"}
 
 class ProtocolCodec:
     """Handles parsing of raw strings into domain events and vice versa.
@@ -68,11 +72,10 @@ class ProtocolCodec:
                         timestamp=int(timestamp),
                     )
 
-                case ["GET", passkey, arg]:
-                    # Distinguer "GET,passkey,<timestamp>" de "GET,passkey,<controller_id>"
-                    if arg.isdigit():
-                        return DataRequestEvent(passkey=passkey, timestamp=int(arg))
-                    return DataRequestEvent(passkey=passkey, controller_id=arg)
+                case ["GET", passkey, controller_id]:
+                    # 3 args -> toujours un controller_id (meme s'il ressemble a un nombre).
+                    # Pour un GET global sans controller, utiliser "GET,<passkey>".
+                    return DataRequestEvent(passkey=passkey, controller_id=controller_id)
 
                 case ["GET", passkey]:
                     return DataRequestEvent(passkey=passkey)
@@ -98,6 +101,50 @@ class ProtocolCodec:
         except (ValueError, TypeError) as e:
             logger.debug(f"Error decoding protocol message '{raw_data}': {e}")
             return None
+
+    @staticmethod
+    def decode_json_sensor_batch(raw: str, default_controller_id: str) -> List[SensorReadingEvent]:
+        """Parse un payload JSON multi-capteurs emis par le micro:bit objet.
+
+        Format attendu (cles optionnelles) :
+            {"T":25.3, "H":42, "L":300, "P":1013}
+            {"id":"17", "T":25.3, "H":42}
+
+        L'attribution se fait via la cle "id" si presente, sinon via
+        ``default_controller_id`` passe par la couche serie.
+        """
+        raw = raw.strip()
+        if not raw.startswith("{"):
+            return []
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            logger.debug(f"Invalid JSON payload from micro:bit: {raw!r} ({exc})")
+            return []
+        if not isinstance(data, dict):
+            return []
+
+        controller_id = str(data.get("id", default_controller_id)).strip()
+        if not controller_id:
+            return []
+
+        events: List[SensorReadingEvent] = []
+        for key, value in data.items():
+            if key not in _JSON_SENSOR_KEYS:
+                continue
+            try:
+                f_value = float(value)
+            except (TypeError, ValueError):
+                logger.debug(f"Skipping non-numeric JSON value for {key}: {value!r}")
+                continue
+            events.append(SensorReadingEvent(
+                reading=SensorReading(
+                    controller_id=controller_id,
+                    sensor_id=key,
+                    value=f_value,
+                )
+            ))
+        return events
 
     @staticmethod
     def encode_config(config: ConfigCommand) -> str:

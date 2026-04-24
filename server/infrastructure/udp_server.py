@@ -43,7 +43,9 @@ class UDPServerHandler(socketserver.BaseRequestHandler):
             event = ProtocolCodec.decode(raw_data)
             if event:
                 response = self.server.service.handle_event(event)
-                if response:
+                # None = pas de reponse attendue (ex: broadcast config, lecture capteur).
+                # Une chaine vide reste une reponse valide (ex: LIST sans controllers).
+                if response is not None:
                     logger.debug(f"UDP Out to {client_address[0]}:{client_address[1]}: '{response}'")
                     socket.sendto(response.encode('utf-8'), client_address)
             else:

@@ -51,11 +51,12 @@ class TestProtocolCodec(unittest.TestCase):
         self.assertEqual(event.controller_id, "MC01")
         self.assertIsNone(event.timestamp)
 
-    def test_decode_get_data_with_timestamp_only(self):
-        event = ProtocolCodec.decode("GET,pass123,1617835200")
+    def test_decode_get_data_numeric_controller(self):
+        # Un controller_id numerique (ex: "17") ne doit pas etre confondu avec un timestamp.
+        event = ProtocolCodec.decode("GET,pass123,17")
         self.assertIsInstance(event, DataRequestEvent)
-        self.assertEqual(event.timestamp, 1617835200)
-        self.assertIsNone(event.controller_id)
+        self.assertEqual(event.controller_id, "17")
+        self.assertIsNone(event.timestamp)
 
     def test_decode_get_data_full(self):
         event = ProtocolCodec.decode("GET,pass123,MC01,1617835200")
@@ -88,6 +89,47 @@ class TestProtocolCodec(unittest.TestCase):
     def test_encode_reading(self):
         reading = SensorReading(controller_id="MC01", sensor_id="HUM", value=45.0)
         self.assertEqual(ProtocolCodec.encode_reading(reading), "MC01,HUM,45.0")
+
+    # ---- decode_json_sensor_batch ----
+
+    def test_json_batch_uses_default_controller(self):
+        events = ProtocolCodec.decode_json_sensor_batch(
+            '{"T":25.3, "H":42, "P":999}', default_controller_id="17"
+        )
+        self.assertEqual(len(events), 3)
+        by_sensor = {e.reading.sensor_id: e.reading for e in events}
+        self.assertEqual(by_sensor["T"].value, 25.3)
+        self.assertEqual(by_sensor["H"].value, 42.0)
+        self.assertEqual(by_sensor["P"].value, 999.0)
+        for e in events:
+            self.assertEqual(e.reading.controller_id, "17")
+
+    def test_json_batch_id_override(self):
+        events = ProtocolCodec.decode_json_sensor_batch(
+            '{"id":"42", "T":20.0}', default_controller_id="default"
+        )
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].reading.controller_id, "42")
+
+    def test_json_batch_ignores_unknown_keys(self):
+        events = ProtocolCodec.decode_json_sensor_batch(
+            '{"T":25, "UNKNOWN":99, "H":42}', default_controller_id="17"
+        )
+        keys = {e.reading.sensor_id for e in events}
+        self.assertEqual(keys, {"T", "H"})
+
+    def test_json_batch_invalid_json(self):
+        self.assertEqual(
+            ProtocolCodec.decode_json_sensor_batch("{not json", default_controller_id="17"),
+            [],
+        )
+
+    def test_json_batch_non_numeric_value_skipped(self):
+        events = ProtocolCodec.decode_json_sensor_batch(
+            '{"T":"abc", "H":42}', default_controller_id="17"
+        )
+        keys = {e.reading.sensor_id for e in events}
+        self.assertEqual(keys, {"H"})
 
 
 if __name__ == '__main__':

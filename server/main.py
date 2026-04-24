@@ -25,11 +25,12 @@ logger = logging.getLogger("IoTApp")
 class IoTApplication:
     """The main application that wires all components together."""
 
-    def __init__(self, db_path: str = "storage/server_data.db", 
-                 serial_port: str = "COM3", baudrate: int = 115200, 
-                 udp_port: int = 10000, 
-                 serial_retry: Optional[int] = None):
-        
+    def __init__(self, db_path: str = "storage/server_data.db",
+                 serial_port: str = "COM3", baudrate: int = 115200,
+                 udp_port: int = 10000,
+                 serial_retry: Optional[int] = None,
+                 default_controller_id: str = "default"):
+
         # 1. Setup Persistence Layer
         self.db = Database(db_path)
         self.repository = IoTRepository(self.db)
@@ -39,10 +40,11 @@ class IoTApplication:
 
         # 3. Setup Infrastructure Layer (Networking)
         self.serial_server = SerialServer(
-            service=self.service, 
-            port=serial_port, 
-            baudrate=baudrate, 
-            retry_delay=serial_retry
+            service=self.service,
+            port=serial_port,
+            baudrate=baudrate,
+            retry_delay=serial_retry,
+            default_controller_id=default_controller_id,
         )
         self.udp_server = UDPServer(service=self.service, port=udp_port)
 
@@ -78,6 +80,15 @@ def main() -> None:
     parser.add_argument("--db", type=str, default="storage/server_data.db", help="Path to SQLite database")
     parser.add_argument("--serial-retry", type=int, nargs='?', const=5, help="Retry delay (seconds) if serial port fails")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument(
+        "--default-controller",
+        type=str,
+        default="default",
+        help=(
+            "Controller ID utilise pour les payloads JSON recus du micro:bit "
+            "quand la cle 'id' est absente (defaut: 'default')."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -90,7 +101,8 @@ def main() -> None:
         serial_port=args.serial_port,
         baudrate=args.baudrate,
         udp_port=args.udp_port,
-        serial_retry=args.serial_retry
+        serial_retry=args.serial_retry,
+        default_controller_id=args.default_controller,
     )
 
     signal.signal(signal.SIGINT, app.stop)

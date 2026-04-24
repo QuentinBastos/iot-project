@@ -12,13 +12,16 @@ logger = logging.getLogger("SerialServer")
 class SerialServer(threading.Thread):
     """Bridge for UART serial communication, integrated with ServerService."""
 
-    def __init__(self, service: ServerService, port: str = "COM3", baudrate: int = 115200, timeout: int = 1, retry_delay: Optional[int] = None):
+    def __init__(self, service: ServerService, port: str = "COM3", baudrate: int = 115200,
+                 timeout: int = 1, retry_delay: Optional[int] = None,
+                 default_controller_id: str = "default"):
         super().__init__()
         self.service = service
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
         self.retry_delay = retry_delay
+        self.default_controller_id = default_controller_id
         self.serial_conn: Optional[serial.Serial] = None
         self.running = False
 
@@ -38,11 +41,7 @@ class SerialServer(threading.Thread):
                         raw_line = raw_line_bytes.decode('utf-8').strip()
                         if raw_line:
                             logger.debug(f"Serial In from {self.port}: '{raw_line}'")
-                            event = ProtocolCodec.decode(raw_line)
-                            if event:
-                                self.service.handle_event(event)
-                            else:
-                                logger.warning(f"Unrecognized serial message: {raw_line}")
+                            self._dispatch_serial_line(raw_line)
                     except UnicodeDecodeError:
                         logger.warning("Malformed serial data.")
             
@@ -58,6 +57,25 @@ class SerialServer(threading.Thread):
                         self.running = False
                 else:
                     logger.debug("Serial connection broken during shutdown (expected).")
+
+    def _dispatch_serial_line(self, raw_line: str) -> None:
+        """Route une ligne serie : JSON du micro:bit objet ou trame CSV classique."""
+        if raw_line.startswith("{"):
+            events = ProtocolCodec.decode_json_sensor_batch(
+                raw_line, self.default_controller_id
+            )
+            if not events:
+                logger.warning(f"Unrecognized JSON payload: {raw_line}")
+                return
+            for event in events:
+                self.service.handle_event(event)
+            return
+
+        event = ProtocolCodec.decode(raw_line)
+        if event:
+            self.service.handle_event(event)
+        else:
+            logger.warning(f"Unrecognized serial message: {raw_line}")
 
     def send_command(self, command_str: str) -> None:
         """Sends a command to the serial device."""

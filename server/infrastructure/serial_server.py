@@ -14,7 +14,8 @@ class SerialServer(threading.Thread):
 
     def __init__(self, service: ServerService, port: str = "COM3", baudrate: int = 115200,
                  timeout: int = 1, retry_delay: Optional[int] = None,
-                 default_controller_id: str = "default"):
+                 default_controller_id: str = "default",
+                 shared_secret: str = "groupe67"):
         super().__init__()
         self.service = service
         self.port = port
@@ -22,6 +23,10 @@ class SerialServer(threading.Thread):
         self.timeout = timeout
         self.retry_delay = retry_delay
         self.default_controller_id = default_controller_id
+        self.shared_secret = shared_secret.encode("utf-8")
+        self.shared_secret_text = shared_secret
+        # device_ids qui ont reussi le handshake de pairing
+        self.paired_devices: set[str] = set()
         self.serial_conn: Optional[serial.Serial] = None
         self.running = False
 
@@ -59,23 +64,69 @@ class SerialServer(threading.Thread):
                     logger.debug("Serial connection broken during shutdown (expected).")
 
     def _dispatch_serial_line(self, raw_line: str) -> None:
-        """Route une ligne serie : JSON du micro:bit objet ou trame CSV classique."""
+        """Route une ligne serie, en gerant trois couches :
+
+            1. XOR+hex (micro:bit objet) -> dechiffre puis re-dispatch
+            2. PAIR|<secret>|<id>        -> handshake, aucune data
+            3. <id>|T:..,H:..            -> readings multi-capteurs
+            4. {"T":..,"H":..}           -> readings JSON (compat v1)
+            5. <ctrl>,<sensor>,<value>   -> trame CSV "classique"
+        """
+        # 1. Dechiffrement si payload hex (envoye par le micro:bit objet).
+        if self._looks_hex(raw_line):
+            plain = ProtocolCodec.decrypt_xor_hex(raw_line, self.shared_secret)
+            if plain is None:
+                logger.warning(f"Failed to decrypt hex payload: {raw_line}")
+                return
+            logger.debug(f"Decrypted payload: {plain!r}")
+            raw_line = plain
+
+        # 2. Pairing handshake.
+        pair = ProtocolCodec.parse_pairing(raw_line)
+        if pair is not None:
+            secret, device_id = pair
+            if secret == self.shared_secret_text and device_id:
+                self.paired_devices.add(device_id)
+                logger.info(f"Pairing OK: device '{device_id}' now trusted")
+            else:
+                logger.warning(f"Pairing rejected for device '{device_id}' (bad secret)")
+            return
+
+        # 3. Format pipe "<id>|T:..,H:..".
+        if "|" in raw_line and ":" in raw_line:
+            events = ProtocolCodec.decode_pipe_payload(raw_line)
+            if events:
+                for ev in events:
+                    self.service.handle_event(ev)
+                return
+
+        # 4. JSON multi-capteurs.
         if raw_line.startswith("{"):
             events = ProtocolCodec.decode_json_sensor_batch(
                 raw_line, self.default_controller_id
             )
-            if not events:
-                logger.warning(f"Unrecognized JSON payload: {raw_line}")
+            if events:
+                for ev in events:
+                    self.service.handle_event(ev)
                 return
-            for event in events:
-                self.service.handle_event(event)
+            logger.warning(f"Unrecognized JSON payload: {raw_line}")
             return
 
+        # 5. Trame classique (CSV).
         event = ProtocolCodec.decode(raw_line)
         if event:
             self.service.handle_event(event)
-        else:
-            logger.warning(f"Unrecognized serial message: {raw_line}")
+            return
+
+        logger.warning(f"Unrecognized serial message: {raw_line}")
+
+    @staticmethod
+    def _looks_hex(s: str) -> bool:
+        # Meme heuristique que le codec mais sans import croise pour garder
+        # cette couche autonome vis-a-vis des details internes du codec.
+        if not s or len(s) % 2 != 0:
+            return False
+        return all(c in "0123456789abcdefABCDEF" for c in s)
 
     def send_command(self, command_str: str) -> None:
         """Sends a command to the serial device."""

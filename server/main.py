@@ -29,7 +29,8 @@ class IoTApplication:
                  serial_port: str = "COM3", baudrate: int = 115200,
                  udp_port: int = 10000,
                  serial_retry: Optional[int] = None,
-                 default_controller_id: str = "default"):
+                 default_controller_id: str = "default",
+                 shared_secret: str = "groupe67"):
 
         # 1. Setup Persistence Layer
         self.db = Database(db_path)
@@ -45,6 +46,7 @@ class IoTApplication:
             baudrate=baudrate,
             retry_delay=serial_retry,
             default_controller_id=default_controller_id,
+            shared_secret=shared_secret,
         )
         self.udp_server = UDPServer(service=self.service, port=udp_port)
 
@@ -89,6 +91,16 @@ def main() -> None:
             "quand la cle 'id' est absente (defaut: 'default')."
         ),
     )
+    parser.add_argument(
+        "--shared-secret",
+        type=str,
+        default="groupe67",
+        help=(
+            "Secret partage micro:bit <-> serveur pour le chiffrement XOR "
+            "et l'authentification de pairing (defaut: 'groupe67'). "
+            "Doit correspondre a SHARED_SECRET dans micro/source/main.cpp."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -103,6 +115,7 @@ def main() -> None:
         udp_port=args.udp_port,
         serial_retry=args.serial_retry,
         default_controller_id=args.default_controller,
+        shared_secret=args.shared_secret,
     )
 
     signal.signal(signal.SIGINT, app.stop)

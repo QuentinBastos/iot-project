@@ -10,8 +10,29 @@ from .events import (
 
 logger = logging.getLogger("ProtocolCodec")
 
-# Cles de capteurs reconnues dans un payload JSON venant du micro:bit.
-_JSON_SENSOR_KEYS = {"T", "H", "L", "P"}
+# Cles de capteurs reconnues dans un payload JSON ou "pipe" venant du micro:bit.
+_SENSOR_KEYS = {"T", "H", "L", "P"}
+# Retro-compat (usage legacy du nom).
+_JSON_SENSOR_KEYS = _SENSOR_KEYS
+
+
+def _looks_like_hex(raw: str) -> bool:
+    """True si la chaine est entierement hexadecimale et de longueur paire.
+
+    Sert a detecter un payload chiffre XOR+hex sur la liaison serie.
+    """
+    if not raw or len(raw) % 2 != 0:
+        return False
+    for ch in raw:
+        if ch not in "0123456789abcdefABCDEF":
+            return False
+    return True
+
+
+def _xor_bytes(data: bytes, secret: bytes) -> bytes:
+    if not secret:
+        return data
+    return bytes(b ^ secret[i % len(secret)] for i, b in enumerate(data))
 
 class ProtocolCodec:
     """Handles parsing of raw strings into domain events and vice versa.
@@ -145,6 +166,76 @@ class ProtocolCodec:
                 )
             ))
         return events
+
+    @staticmethod
+    def decrypt_xor_hex(hex_str: str, secret: bytes) -> Optional[str]:
+        """Decode hex -> XOR avec le secret partage -> string UTF-8.
+
+        Retourne None si le hex est invalide ou si le plaintext n'est pas UTF-8.
+        """
+        hex_str = hex_str.strip()
+        if not _looks_like_hex(hex_str):
+            return None
+        try:
+            cipher = bytes.fromhex(hex_str)
+        except ValueError:
+            return None
+        plain = _xor_bytes(cipher, secret)
+        try:
+            return plain.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+
+    @staticmethod
+    def encrypt_xor_hex(plain: str, secret: bytes) -> str:
+        """Symetrique de decrypt_xor_hex : utilise pour les tests et l'outillage."""
+        return _xor_bytes(plain.encode("utf-8"), secret).hex().upper()
+
+    @staticmethod
+    def decode_pipe_payload(raw: str) -> List[SensorReadingEvent]:
+        """Parse le format envoye par le micro:bit objet :
+            <device_id>|T:25.3,H:42,P:999
+        Retourne une liste vide si le format ne correspond pas.
+        """
+        raw = raw.strip()
+        if "|" not in raw:
+            return []
+        device_id, _, body = raw.partition("|")
+        device_id = device_id.strip()
+        if not device_id:
+            return []
+
+        events: List[SensorReadingEvent] = []
+        for chunk in body.split(","):
+            if ":" not in chunk:
+                continue
+            key, _, value = chunk.partition(":")
+            key = key.strip().upper()
+            if key not in _SENSOR_KEYS:
+                continue
+            try:
+                f_value = float(value.strip())
+            except ValueError:
+                continue
+            events.append(SensorReadingEvent(
+                reading=SensorReading(
+                    controller_id=device_id,
+                    sensor_id=key,
+                    value=f_value,
+                )
+            ))
+        return events
+
+    @staticmethod
+    def parse_pairing(raw: str) -> Optional[tuple]:
+        """Parse "PAIR|<secret>|<device_id>". Retourne (secret, device_id) ou None."""
+        raw = raw.strip()
+        if not raw.startswith("PAIR|"):
+            return None
+        parts = raw.split("|", 2)
+        if len(parts) != 3:
+            return None
+        return (parts[1], parts[2].strip())
 
     @staticmethod
     def encode_config(config: ConfigCommand) -> str:

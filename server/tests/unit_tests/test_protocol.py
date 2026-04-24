@@ -131,6 +131,49 @@ class TestProtocolCodec(unittest.TestCase):
         keys = {e.reading.sensor_id for e in events}
         self.assertEqual(keys, {"H"})
 
+    # ---- XOR + hex encryption ----
+
+    def test_xor_hex_round_trip(self):
+        secret = b"groupe67"
+        plain = "ABC|T:25.3,H:42,P:999"
+        cipher = ProtocolCodec.encrypt_xor_hex(plain, secret)
+        # Tout hexa, longueur paire, purement ASCII majuscule.
+        self.assertRegex(cipher, r"^[0-9A-F]+$")
+        self.assertEqual(len(cipher), len(plain) * 2)
+        self.assertEqual(ProtocolCodec.decrypt_xor_hex(cipher, secret), plain)
+
+    def test_xor_hex_invalid(self):
+        secret = b"groupe67"
+        self.assertIsNone(ProtocolCodec.decrypt_xor_hex("ZZZZ", secret))
+        self.assertIsNone(ProtocolCodec.decrypt_xor_hex("ABC", secret))  # longueur impaire
+
+    # ---- Pipe payload <id>|T:..,H:..,P:.. ----
+
+    def test_pipe_payload_basic(self):
+        events = ProtocolCodec.decode_pipe_payload("ABC|T:25.3,H:42,P:999")
+        self.assertEqual(len(events), 3)
+        self.assertTrue(all(e.reading.controller_id == "ABC" for e in events))
+        values = {e.reading.sensor_id: e.reading.value for e in events}
+        self.assertEqual(values, {"T": 25.3, "H": 42.0, "P": 999.0})
+
+    def test_pipe_payload_ignores_unknown(self):
+        events = ProtocolCodec.decode_pipe_payload("X|T:1.0,FOO:2,L:300")
+        keys = {e.reading.sensor_id for e in events}
+        self.assertEqual(keys, {"T", "L"})
+
+    def test_pipe_payload_no_pipe(self):
+        self.assertEqual(ProtocolCodec.decode_pipe_payload("T:25.3,H:42"), [])
+
+    # ---- Pairing ----
+
+    def test_parse_pairing_ok(self):
+        result = ProtocolCodec.parse_pairing("PAIR|groupe67|ABC")
+        self.assertEqual(result, ("groupe67", "ABC"))
+
+    def test_parse_pairing_rejects_other_format(self):
+        self.assertIsNone(ProtocolCodec.parse_pairing("HELLO"))
+        self.assertIsNone(ProtocolCodec.parse_pairing("PAIR|onlyone"))
+
 
 if __name__ == '__main__':
     unittest.main()

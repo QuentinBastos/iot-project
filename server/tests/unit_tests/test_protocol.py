@@ -51,11 +51,12 @@ class TestProtocolCodec(unittest.TestCase):
         self.assertEqual(event.controller_id, "MC01")
         self.assertIsNone(event.timestamp)
 
-    def test_decode_get_data_with_timestamp_only(self):
-        event = ProtocolCodec.decode("GET,pass123,1617835200")
+    def test_decode_get_data_numeric_controller(self):
+        # Un controller_id numerique (ex: "17") ne doit pas etre confondu avec un timestamp.
+        event = ProtocolCodec.decode("GET,pass123,17")
         self.assertIsInstance(event, DataRequestEvent)
-        self.assertEqual(event.timestamp, 1617835200)
-        self.assertIsNone(event.controller_id)
+        self.assertEqual(event.controller_id, "17")
+        self.assertIsNone(event.timestamp)
 
     def test_decode_get_data_full(self):
         event = ProtocolCodec.decode("GET,pass123,MC01,1617835200")

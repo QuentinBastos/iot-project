@@ -68,11 +68,10 @@ class ProtocolCodec:
                         timestamp=int(timestamp),
                     )
 
-                case ["GET", passkey, arg]:
-                    # Distinguer "GET,passkey,<timestamp>" de "GET,passkey,<controller_id>"
-                    if arg.isdigit():
-                        return DataRequestEvent(passkey=passkey, timestamp=int(arg))
-                    return DataRequestEvent(passkey=passkey, controller_id=arg)
+                case ["GET", passkey, controller_id]:
+                    # 3 args -> toujours un controller_id (meme s'il ressemble a un nombre).
+                    # Pour un GET global sans controller, utiliser "GET,<passkey>".
+                    return DataRequestEvent(passkey=passkey, controller_id=controller_id)
 
                 case ["GET", passkey]:
                     return DataRequestEvent(passkey=passkey)

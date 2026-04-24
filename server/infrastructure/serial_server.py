@@ -23,8 +23,10 @@ class SerialServer(threading.Thread):
         self.timeout = timeout
         self.retry_delay = retry_delay
         self.default_controller_id = default_controller_id
-        self.shared_secret = shared_secret.encode("utf-8")
         self.shared_secret_text = shared_secret
+        # Cle AES-128 derivee du secret partage (voir ProtocolCodec.derive_aes_key).
+        from protocol.codec import derive_aes_key
+        self.aes_key = derive_aes_key(shared_secret)
         # device_ids qui ont reussi le handshake de pairing
         self.paired_devices: set[str] = set()
         self.serial_conn: Optional[serial.Serial] = None
@@ -73,8 +75,9 @@ class SerialServer(threading.Thread):
             5. <ctrl>,<sensor>,<value>   -> trame CSV "classique"
         """
         # 1. Dechiffrement si payload hex (envoye par le micro:bit objet).
+        #    Format : hex(IV || ciphertext AES-128-CBC padde PKCS7).
         if self._looks_hex(raw_line):
-            plain = ProtocolCodec.decrypt_xor_hex(raw_line, self.shared_secret)
+            plain = ProtocolCodec.decrypt_aes_cbc_hex(raw_line, self.aes_key)
             if plain is None:
                 logger.warning(f"Failed to decrypt hex payload: {raw_line}")
                 return

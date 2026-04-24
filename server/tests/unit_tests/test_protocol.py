@@ -131,21 +131,50 @@ class TestProtocolCodec(unittest.TestCase):
         keys = {e.reading.sensor_id for e in events}
         self.assertEqual(keys, {"H"})
 
-    # ---- XOR + hex encryption ----
+    # ---- AES-128-CBC + hex encryption ----
 
-    def test_xor_hex_round_trip(self):
-        secret = b"groupe67"
-        plain = "ABC|T:25.3,H:42,P:999"
-        cipher = ProtocolCodec.encrypt_xor_hex(plain, secret)
-        # Tout hexa, longueur paire, purement ASCII majuscule.
+    def test_derive_aes_key_padding(self):
+        from protocol.codec import derive_aes_key
+        self.assertEqual(derive_aes_key("groupe67"), b"groupe67" + b"\x00" * 8)
+
+    def test_derive_aes_key_truncation(self):
+        from protocol.codec import derive_aes_key
+        self.assertEqual(len(derive_aes_key("x" * 32)), 16)
+
+    def test_aes_cbc_round_trip(self):
+        from protocol.codec import derive_aes_key
+        key = derive_aes_key("groupe67")
+        plain = "5E90D3CB|T:25.3,H:42,P:999"
+        cipher = ProtocolCodec.encrypt_aes_cbc_hex(plain, key)
+        # Hex ASCII majuscule, IV (16o=32 hex) + >=1 bloc (32 hex) => >=64 chars.
         self.assertRegex(cipher, r"^[0-9A-F]+$")
-        self.assertEqual(len(cipher), len(plain) * 2)
-        self.assertEqual(ProtocolCodec.decrypt_xor_hex(cipher, secret), plain)
+        self.assertGreaterEqual(len(cipher), 64)
+        self.assertEqual(ProtocolCodec.decrypt_aes_cbc_hex(cipher, key), plain)
 
-    def test_xor_hex_invalid(self):
-        secret = b"groupe67"
-        self.assertIsNone(ProtocolCodec.decrypt_xor_hex("ZZZZ", secret))
-        self.assertIsNone(ProtocolCodec.decrypt_xor_hex("ABC", secret))  # longueur impaire
+    def test_aes_cbc_iv_fixed_vector(self):
+        """Vecteur reproductible : avec un IV connu, la sortie est deterministe.
+        Permet de verifier la compatibilite avec l'implementation micro:bit."""
+        from protocol.codec import derive_aes_key
+        key = derive_aes_key("groupe67")
+        iv = bytes.fromhex("00112233445566778899AABBCCDDEEFF")
+        plain = "ABC|T:1.0"
+        cipher = ProtocolCodec.encrypt_aes_cbc_hex(plain, key, iv=iv)
+        self.assertTrue(cipher.startswith(iv.hex().upper()))
+        self.assertEqual(ProtocolCodec.decrypt_aes_cbc_hex(cipher, key), plain)
+
+    def test_aes_cbc_invalid_hex(self):
+        from protocol.codec import derive_aes_key
+        key = derive_aes_key("groupe67")
+        self.assertIsNone(ProtocolCodec.decrypt_aes_cbc_hex("ZZZZ", key))
+        self.assertIsNone(ProtocolCodec.decrypt_aes_cbc_hex("ABC", key))
+
+    def test_aes_cbc_wrong_key(self):
+        from protocol.codec import derive_aes_key
+        good = derive_aes_key("groupe67")
+        bad = derive_aes_key("other")
+        cipher = ProtocolCodec.encrypt_aes_cbc_hex("hello", good)
+        # Mauvaise cle -> soit padding invalide, soit UTF-8 invalide -> None.
+        self.assertIsNone(ProtocolCodec.decrypt_aes_cbc_hex(cipher, bad))
 
     # ---- Pipe payload <id>|T:..,H:..,P:.. ----
 

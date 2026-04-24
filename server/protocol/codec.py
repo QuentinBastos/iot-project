@@ -1,6 +1,12 @@
 import json
 import logging
+import os
 from typing import List, Optional
+
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.padding import PKCS7
+from cryptography.hazmat.backends import default_backend
+
 from core.models import SensorReading, ConfigCommand
 from .events import (
     AppEvent, RegisterUserEvent, AddControllerEvent,
@@ -15,12 +21,12 @@ _SENSOR_KEYS = {"T", "H", "L", "P"}
 # Retro-compat (usage legacy du nom).
 _JSON_SENSOR_KEYS = _SENSOR_KEYS
 
+AES_BLOCK_SIZE_BYTES = 16
+AES_KEY_SIZE_BYTES = 16   # AES-128
+
 
 def _looks_like_hex(raw: str) -> bool:
-    """True si la chaine est entierement hexadecimale et de longueur paire.
-
-    Sert a detecter un payload chiffre XOR+hex sur la liaison serie.
-    """
+    """True si la chaine est entierement hexadecimale et de longueur paire."""
     if not raw or len(raw) % 2 != 0:
         return False
     for ch in raw:
@@ -29,10 +35,16 @@ def _looks_like_hex(raw: str) -> bool:
     return True
 
 
-def _xor_bytes(data: bytes, secret: bytes) -> bytes:
-    if not secret:
-        return data
-    return bytes(b ^ secret[i % len(secret)] for i, b in enumerate(data))
+def derive_aes_key(secret: str) -> bytes:
+    """Materialise la cle AES-128 (16 octets) a partir du --shared-secret.
+
+    Strategie : zero-padding ou troncature sur 16 octets. Simple a reproduire
+    cote micro:bit (compile-time constant dans micro/source/main.cpp).
+    """
+    b = secret.encode("utf-8")
+    if len(b) >= AES_KEY_SIZE_BYTES:
+        return b[:AES_KEY_SIZE_BYTES]
+    return b + b"\x00" * (AES_KEY_SIZE_BYTES - len(b))
 
 class ProtocolCodec:
     """Handles parsing of raw strings into domain events and vice versa.
@@ -168,28 +180,72 @@ class ProtocolCodec:
         return events
 
     @staticmethod
-    def decrypt_xor_hex(hex_str: str, secret: bytes) -> Optional[str]:
-        """Decode hex -> XOR avec le secret partage -> string UTF-8.
+    def decrypt_aes_cbc_hex(hex_str: str, key: bytes) -> Optional[str]:
+        """Dechiffre un payload hex(IV || ciphertext) encode par le micro:bit.
 
-        Retourne None si le hex est invalide ou si le plaintext n'est pas UTF-8.
+        - 16 premiers octets = IV
+        - Le reste = ciphertext AES-128-CBC, padde PKCS7
+        - La cle doit faire exactement 16 octets.
+
+        Retourne None si la trame n'est pas valide (hex malforme, longueur,
+        padding ou encodage UTF-8).
         """
         hex_str = hex_str.strip()
         if not _looks_like_hex(hex_str):
             return None
         try:
-            cipher = bytes.fromhex(hex_str)
+            data = bytes.fromhex(hex_str)
         except ValueError:
             return None
-        plain = _xor_bytes(cipher, secret)
+
+        # Il faut au moins un IV (16 o.) + un bloc chiffre (16 o.).
+        if len(data) < 2 * AES_BLOCK_SIZE_BYTES:
+            return None
+        if (len(data) - AES_BLOCK_SIZE_BYTES) % AES_BLOCK_SIZE_BYTES != 0:
+            return None
+        if len(key) != AES_KEY_SIZE_BYTES:
+            logger.error(f"AES key has {len(key)} bytes, expected {AES_KEY_SIZE_BYTES}")
+            return None
+
+        iv = data[:AES_BLOCK_SIZE_BYTES]
+        ciphertext = data[AES_BLOCK_SIZE_BYTES:]
+
+        try:
+            decryptor = Cipher(
+                algorithms.AES(key), modes.CBC(iv), backend=default_backend()
+            ).decryptor()
+            padded = decryptor.update(ciphertext) + decryptor.finalize()
+            unpadder = PKCS7(AES_BLOCK_SIZE_BYTES * 8).unpadder()
+            plain = unpadder.update(padded) + unpadder.finalize()
+        except ValueError:
+            return None
+
         try:
             return plain.decode("utf-8")
         except UnicodeDecodeError:
             return None
 
     @staticmethod
-    def encrypt_xor_hex(plain: str, secret: bytes) -> str:
-        """Symetrique de decrypt_xor_hex : utilise pour les tests et l'outillage."""
-        return _xor_bytes(plain.encode("utf-8"), secret).hex().upper()
+    def encrypt_aes_cbc_hex(plain: str, key: bytes, iv: Optional[bytes] = None) -> str:
+        """Chiffre plain en AES-128-CBC, retourne hex(IV || ciphertext).
+
+        ``iv`` est optionnel : si None, un IV cryptographiquement sur est
+        genere via os.urandom. Utile a surcharger pour les tests.
+        """
+        if len(key) != AES_KEY_SIZE_BYTES:
+            raise ValueError(f"AES key must be {AES_KEY_SIZE_BYTES} bytes")
+        if iv is None:
+            iv = os.urandom(AES_BLOCK_SIZE_BYTES)
+        elif len(iv) != AES_BLOCK_SIZE_BYTES:
+            raise ValueError(f"IV must be {AES_BLOCK_SIZE_BYTES} bytes")
+
+        padder = PKCS7(AES_BLOCK_SIZE_BYTES * 8).padder()
+        padded = padder.update(plain.encode("utf-8")) + padder.finalize()
+        encryptor = Cipher(
+            algorithms.AES(key), modes.CBC(iv), backend=default_backend()
+        ).encryptor()
+        ciphertext = encryptor.update(padded) + encryptor.finalize()
+        return (iv + ciphertext).hex().upper()
 
     @staticmethod
     def decode_pipe_payload(raw: str) -> List[SensorReadingEvent]:

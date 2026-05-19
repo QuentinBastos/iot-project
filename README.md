@@ -1,6 +1,17 @@
 # iot-project
 
+Mini-architecture IoT complète **objet → passerelle → serveur → application** :
+relevé de capteurs météo dans un bureau, stockage, et configuration à distance d'un
+écran OLED depuis un smartphone Android.
+
 ## 📚 Documentation
+
+- **[RAPPORT.md](RAPPORT.md)** — rapport de synthèse (équipe, architecture, protocole, avancement)
+- **[application/](application/README.md)** — application Android (contrôle / accès)
+- **[micro/](micro/README.md)** — objet connecté micro:bit (capteurs + OLED)
+- **[gateway/](gateway/microbit-samples/README.md)** — passerelle micro:bit USB (relais radio ⇄ série)
+- **[server/](server/README.md)** — serveur Python (pont série/UDP + SQLite)
+
 [Accéder au Notion du projet](https://www.notion.so/IOT-Mini-project-33b5e495ffbe80759045efac36a5daa0?source=copy_link)
 
 ## 🏗️ Architecture globale

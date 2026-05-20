@@ -178,3 +178,50 @@ réalisés sont des évolutions explicitement optionnelles.
 | Base de données | SQLite | Sans serveur, fichier unique, suffisant ici |
 | Application | Android natif Java | Pas de dépendance, contrôle fin de l'UDP |
 | Transport app | UDP | Imposé par l'énoncé |
+
+---
+
+## 10. Livrables du rendu
+
+Conformément à l'énoncé, le rendu contient cinq éléments. Chaque code livré est
+**documenté dans son propre README** (en français) et commenté en source.
+
+| # | Livrable | Emplacement | Documentation |
+|---|---|---|---|
+| 1 | Rapport synthétique | [`RAPPORT.md`](RAPPORT.md) | Ce document |
+| 2 | Application Android | [`application/`](application/) | [`application/README.md`](application/README.md) |
+| 3 | Code de l'objet connecté | [`micro/`](micro/) | [`micro/README.md`](micro/README.md) |
+| 4 | Code de la passerelle | [`gateway/microbit-samples/`](gateway/microbit-samples/) | [`gateway/microbit-samples/README.md`](gateway/microbit-samples/README.md) |
+| 5 | Application côté serveur | [`server/`](server/) | [`server/README.md`](server/README.md) |
+
+### Résumé de chaque livrable
+
+**① Application Android** — Java (Material 3), API ≥ 31. Pilote l'ensemble de l'architecture :
+configuration IP/port/passkey, gestion CRUD des micro:bit associés à la passkey, choix de
+l'ordre d'affichage OLED (Spinner + bouton Ajouter), consultation des dernières valeurs,
+historique journalier agrégé. Communication UDP uniquement, request/response sur le même
+socket éphémère. APK debug fourni : `bureau-bien-etre.apk`.
+
+**② Objet connecté (micro:bit)** — C/C++ sur micro:bit DAL. Lit le capteur météo BME280
+(T/H/P) et la luminosité (matrice LED en photodiode), émet par radio toutes les 2 s une
+trame chiffrée **AES-128-CBC** (matériel `NRF_ECB`, IV aléatoire `NRF_RNG`). Écoute en
+parallèle les ordres `CONFIG` venant du serveur via la passerelle et met à jour l'OLED
+SSD1306 avec les capteurs dans l'ordre demandé (`TLH`, `LTH`, etc.). Identifiant unique
+matériel (`microbit_serial_number()`) pour permettre le multi-objets.
+
+**③ Passerelle (micro:bit USB)** — C/C++ minimaliste, basé sur le sample `simple-radio-rx`
+de Lancaster University. **Relais transparent** entre la radio RF 2.4 GHz et la liaison
+série USB (115200 bauds). Aucun parsing : le contenu (chiffré ou non) traverse tel quel.
+Bluetooth désactivé et `radio_max_packet_size` porté à 251 octets via `config.json` pour
+accueillir les trames AES + IV + hex.
+
+**④ Serveur** — Python 3, architecture en couches (`core/`, `data/`, `protocol/`,
+`infrastructure/`). Lit la série, déchiffre l'AES, stocke un *snapshot* multi-capteurs
+par ligne dans SQLite (table `readings`), écoute le port UDP 10000 pour les commandes de
+l'application. Throttling à 10 s par objet, historique agrégé par jour (moyenne / min /
+max). Sécurité : passkey hachée PBKDF2+sel, appairage matériel, rate-limit UDP. 57 tests
+automatisés (unit + intégration + end-to-end).
+
+**⑤ Rapport** — Ce document (≥2 pages), synthétique : équipe, architecture, protocole,
+sécurité, état d'avancement et choix technologiques. Les détails d'installation, de
+compilation et d'utilisation se trouvent dans le README de chaque brique.

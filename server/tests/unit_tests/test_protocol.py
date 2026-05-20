@@ -10,7 +10,7 @@ from protocol.events import (
     ListControllersEvent, DataRequestEvent, HistoryRequestEvent,
     ConfigCommandEvent, SensorReadingEvent, SensorSnapshotEvent,
 )
-from core.models import SensorReading, ConfigCommand
+from core.models import ConfigCommand
 
 class TestProtocolCodec(unittest.TestCase):
     def test_decode_init(self):
@@ -86,10 +86,6 @@ class TestProtocolCodec(unittest.TestCase):
     def test_encode_config(self):
         config = ConfigCommand(controller_id="MC02", display_order="HTL")
         self.assertEqual(ProtocolCodec.encode_config(config), "MC02,CONFIG,HTL")
-
-    def test_encode_reading(self):
-        reading = SensorReading(controller_id="MC01", sensor_id="HUM", value=45.0)
-        self.assertEqual(ProtocolCodec.encode_reading(reading), "MC01,HUM,45.0")
 
     # ---- decode_json_sensor_batch ----
 

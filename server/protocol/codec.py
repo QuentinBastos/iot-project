@@ -315,7 +315,3 @@ class ProtocolCodec:
     @staticmethod
     def encode_config(config: ConfigCommand) -> str:
         return f"{config.controller_id},CONFIG,{config.display_order}"
-
-    @staticmethod
-    def encode_reading(reading: SensorReading) -> str:
-        return f"{reading.controller_id},{reading.sensor_id},{reading.value}"

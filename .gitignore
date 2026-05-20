@@ -1,1 +1,36 @@
-.idea
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# SQLite (dev data)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Logs
+*.log
+
+# Build artefacts micro:bit (yotta)
+build/
+yotta_modules/
+yotta_targets/
+*.o
+*.a
+*.hex
+*.bin
+*.elf
+
+# Claude tooling
+.claude/

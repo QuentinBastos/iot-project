@@ -1,34 +1,14 @@
----
-title: "Rendu — Mini-architecture IoT"
-module: "Développement embarqué et IoT"
-année: 2026
-groupe: 67
-tags:
-  - iot
-  - microbit
-  - android
-  - python
-  - embedded
-  - aes-128
-  - sqlite
-  - bme280
-  - ssd1306
----
-
 # Rendu — Mini-architecture IoT
 
-> [!info] Informations du groupe
-> **Module** : Développement embarqué et IoT — 2026  
-> **Groupe** : 67
->
-> | Membre | Contribution principale |
-> |---|---|
-> | Quentin Bastos | Application Android, protocole serveur, sécurité |
-> | Théo (EkkoFTW) | Serveur (architecture, alignement protocole) |
-> | Adel Hocine Boudjadja | Objet connecté (capteurs, OLED) |
-> | Arnaud Decourt | Serveur, intégration passerelle |
->
-> Les rôles sont indicatifs ; chaque brique a été relue et testée en binôme.
+**Module** : Développement embarqué et IoT — 2026  
+**Groupe** : 13
+
+| Membre | Contribution principale |
+|---|---|
+| Quentin Bastos | Application Android, protocole serveur, sécurité |
+| Théo Demaria | Serveur (architecture, alignement protocole) |
+| Adel Hocine Boudjadja | Objet connecté (capteurs, OLED) |
+| Arnaud Decourt | Serveur, intégration passerelle |
 
 ---
 
@@ -45,291 +25,229 @@ L'objectif est de déployer une **architecture IoT complète** permettant de :
 
 ## 2. Architecture générale
 
+La chaîne IoT repose sur quatre briques communicant en cascade :
+
+```mermaid
+graph TD
+    A["Objet connecté\nmicro:bit + BME280 + OLED"]
+    B["Passerelle\nmicro:bit USB"]
+    C["Serveur Python\nPC · SQLite · UDP 10000"]
+    D["App Android\nJava · Material 3"]
+
+    A -- "Radio RF 2.4 GHz\nchiffré AES-128" --> B
+    B -- "UART 115200 bauds" --> C
+    C -- "UDP WiFi" --> D
+    D -- "UDP WiFi" --> C
+    C -- "UART" --> B
+    B -- "Radio RF" --> A
+```
+
+| Brique | Rôle | Technologie |
+|---|---|---|
+| **Objet** | Mesure, chiffre, émet, affiche OLED | C/C++, micro:bit DAL, yotta |
+| **Passerelle** | Relais transparent radio ⇄ UART | C/C++, micro:bit DAL, yotta |
+| **Serveur** | Déchiffre, stocke, répond UDP | Python 3, SQLite |
+| **App Android** | Configure, contrôle, consulte | Java, Material 3 |
+
+---
+
+## 3. Flux de données
+
+### 3.1 Remontée d'une mesure capteur
+
 ```mermaid
 sequenceDiagram
-    autonumber
-    actor Utilisateur
-    participant App as 📱 App Android<br/>(Bureau bien etre)
-    participant Serveur as 💻 Serveur Python<br/>(PC · port UDP 10000)
-    participant Passerelle as 📻 Passerelle<br/>(micro:bit USB)
-    participant Objet as 🌡️ Objet connecté<br/>(micro:bit · BME280 · OLED)
+    participant OBJ as Objet
+    participant GW as Passerelle
+    participant SRV as Serveur
+    participant APP as App Android
 
-    Note over Utilisateur, Objet: Sens 1 — Contrôle de l'affichage OLED
-    Utilisateur->>App: Choisit l'ordre (ex: TLH) via Spinner
-    App->>Serveur: UDP · 5E90D3CB,CONFIG,TLH
-    Serveur->>Passerelle: UART · 5E90D3CB,CONFIG,TLH\n
-    Passerelle->>Objet: Radio RF 2.4 GHz (en clair)
-    Note right of Objet: g_display_order = "TLH"<br/>OLED mis à jour au prochain cycle
-
-    Note over Utilisateur, Objet: Sens 2 — Remontée des données capteurs
-    Objet->>Objet: Lit BME280 + readLightLevel() toutes les 2s
-    Objet->>Passerelle: Radio RF · hex(IV‖AES-CBC(id|T:x,H:x,L:x,P:x))
-    Passerelle->>Serveur: UART · même hex + \n
-    Serveur->>Serveur: Déchiffre AES → stocke SQLite (throttle 10s)
-    App->>Serveur: UDP · GET,passkey,5E90D3CB
-    Serveur->>App: UDP · 5E90D3CB,T,22.3\n5E90D3CB,H,58\n...
-    App->>Utilisateur: Affiche T · H · L · P
+    OBJ->>OBJ: Lit température, humidité, pression, luminosité
+    OBJ->>OBJ: Chiffre le message avec AES-128
+    OBJ->>GW: Envoie par Radio RF
+    GW->>SRV: Retransmet par câble USB (UART)
+    SRV->>SRV: Déchiffre et enregistre dans la base
+    APP->>SRV: Demande les données (UDP)
+    SRV->>APP: Répond avec les dernières valeurs
 ```
 
----
-
-## 3. Vue d'ensemble des composants
+### 3.2 Envoi d'une commande d'affichage
 
 ```mermaid
-graph TB
-    subgraph OBJET["🔲 Objet connecté — micro/"]
-        direction TB
-        CPU_O["nRF51822\nARM Cortex-M0"]
-        BME["BME280 I2C\nT · H · P\n(addr 0xEC)"]
-        OLED["SSD1306 I2C\n128×64 OLED\n8 pages · 16 chars/ligne"]
-        LED_M["Matrice LED 5×5\ncomme photodiode\nreadLightLevel() → 0-255"]
-        ECB["NRF_ECB\nAES-128 matériel\n48 octets (key+plain+cipher)"]
-        RNG["NRF_RNG\nEntropie matérielle\nIV aléatoire 16 octets"]
-        RADIO_O["Radio 2.4 GHz\nGroupe 1 · paquet 251 o."]
-        BME -- "I2C bus" --> CPU_O
-        OLED -- "I2C bus" --> CPU_O
-        LED_M --> CPU_O
-        CPU_O --> ECB
-        CPU_O --> RNG
-        RNG --> ECB
-        ECB --> RADIO_O
-    end
+sequenceDiagram
+    participant APP as App Android
+    participant SRV as Serveur
+    participant GW as Passerelle
+    participant OBJ as Objet
 
-    subgraph GW["🔌 Passerelle — gateway/microbit-samples/"]
-        direction TB
-        CPU_G["nRF51822\nevent-driven fiber"]
-        RADIO_G["Radio 2.4 GHz\nGroupe 1 · paquet 251 o."]
-        UART_G["UART USB\n115200 bauds · délim \\n"]
-        CPU_G --> RADIO_G
-        CPU_G --> UART_G
-    end
-
-    subgraph SRV["🖥️ Serveur — server/"]
-        direction TB
-        SERIAL_S["SerialServer\nThread UART"]
-        UDP_S["UDPServer\nThreadingMixIn\nport 10000"]
-        CODEC["ProtocolCodec\nAES·pipe·JSON·CSV"]
-        SVC["ServerService\nlogique métier · throttle"]
-        REPO["IoTRepository\nSQLite WAL"]
-        DB[("SQLite\nreadings\nusers\nconfigs")]
-        SERIAL_S --> CODEC
-        UDP_S --> CODEC
-        CODEC --> SVC
-        SVC --> REPO
-        REPO --> DB
-        SVC --> SERIAL_S
-    end
-
-    subgraph APP["📱 Application Android — application/"]
-        direction TB
-        MA["MainActivity\n5 sections Material3"]
-        UC["UdpClient\nsend() · sendAndReceive()\ntimeout 5s"]
-        SD["SensorData\nparseMultiline()"]
-        PREFS["SharedPreferences\nIP · port · passkey · ctrl"]
-        MA --> UC
-        MA --> SD
-        MA --> PREFS
-    end
-
-    RADIO_O -- "hex chiffré\nRF 2.4 GHz" --> RADIO_G
-    UART_G -- "même hex + \\n\nUSB" --> SERIAL_S
-    SERIAL_S -- "CONFIG en clair\n+ \\n" --> UART_G
-    UART_G -- "CONFIG\nRF 2.4 GHz" --> RADIO_O
-    UDP_S -- "UDP WiFi" --> UC
-    UC -- "UDP WiFi" --> UDP_S
+    APP->>SRV: "Affiche T puis L puis H"
+    SRV->>SRV: Sauvegarde la configuration
+    SRV->>GW: Envoie la commande par UART
+    GW->>OBJ: Retransmet par Radio RF
+    OBJ->>OBJ: Met à jour l'ordre d'affichage OLED
+    Note over OBJ: Au prochain cycle (≤2s) :<br/>l'écran affiche dans le bon ordre
 ```
 
----
-
-## 4. Protocole réseau
-
-### 4.1 Objet ⇄ Passerelle (radio RF 2.4 GHz)
-
-Les deux cartes (objet et passerelle) partagent la même configuration radio :
-
-```json
-{
-  "microbit-dal": {
-    "bluetooth": { "enabled": 0 },
-    "radio_max_packet_size": 251
-  }
-}
-```
-
-> [!note] Pourquoi 251 octets ?
-> La trame chiffrée `hex(IV‖ciphertext)` est en ASCII hexadécimal. Pour un payload de ~40 chars, le PKCS#7 donne 2 blocs de 16 octets soit 32 octets de ciphertext + 16 octets IV = 48 octets → 96 chars hex. La limite par défaut du DAL (32 octets) est insuffisante.
-
-| Sens | Contenu en clair | Sur la radio |
-|---|---|---|
-| Boot — appairage | `PAIR\|groupe67\|5E90D3CB` | Chiffrée AES-128-CBC, hex ASCII |
-| Données capteurs | `5E90D3CB\|T:22.3,H:58,L:89,P:1012` | Chiffrée AES-128-CBC, hex ASCII |
-| Ordre OLED (reçu) | `5E90D3CB,CONFIG,TLH` | En clair — relais passerelle |
-
-### 4.2 App Android ⇄ Serveur (UDP port 10 000)
-
-| Commande | Réponse |
-|---|---|
-| `INIT,<passkey>` | `OK` |
-| `LIST,<passkey>` | `ctrl1\nctrl2\n…` |
-| `ADD,<passkey>,<id>` | `OK` / `UNAUTHORIZED` |
-| `REMOVE,<passkey>,<id>` | `OK` / `ERROR` |
-| `GET,<passkey>,<id>` | `ctrl,T,22.3\nctrl,H,58\n…` |
-| `HISTORY,<passkey>,<id>,<jours>` | CSV agrégé jour par jour |
-| `<id>,CONFIG,<ordre>` | *(broadcast vers l'objet)* |
-
----
-
-## 5. Sécurité
-
-> [!warning] Exigence de l'énoncé
-> "Pensez aussi à la sécurité des données envoyées." Le déploiement multi-bureaux expose les trames radio à tout récepteur sur le même groupe RF.
-
-### 5.1 Chiffrement AES-128-CBC de bout en bout
+### 3.3 Appairage d'un objet au démarrage
 
 ```mermaid
-flowchart LR
-    subgraph MICRO["Côté micro:bit (C/C++)"]
-        P["Payload clair\n5E90D3CB|T:22.3,H:58"] --> PAD["Padding PKCS#7\n→ N×16 octets"]
-        PAD --> XOR
-        RNG2["NRF_RNG\nIV[16] aléatoire"] --> XOR["bloc_i XOR prev\nprev_0 = IV"]
-        XOR --> ECB["NRF_ECB\nAES-128 ECB matériel\nnrf_ecb_crypt(dst, src)"]
-        ECB --> CHAIN["CBC chain\nprev = cipher_i"]
-        CHAIN --> XOR
-        ECB --> HEX["hex(IV ‖ ciphertext)\nASCII pur · safe UART"]
+sequenceDiagram
+    participant OBJ as Objet
+    participant GW as Passerelle
+    participant SRV as Serveur
+
+    Note over OBJ: Démarrage / reset
+    OBJ->>OBJ: Génère son identifiant unique (numéro de série)
+    OBJ->>OBJ: Chiffre un message de présentation
+    OBJ->>GW: Envoie par Radio RF
+    GW->>SRV: Retransmet par UART
+    SRV->>SRV: Déchiffre et vérifie le secret
+    alt Secret correct
+        SRV->>SRV: Ajoute l'objet à la liste des appareils de confiance
+    else Secret incorrect
+        SRV->>SRV: Message ignoré
     end
-
-    subgraph SERVER["Côté serveur (Python)"]
-        HEX2["hex reçu"] --> PARSE["bytes.fromhex()"]
-        PARSE --> SPLIT["iv = data[:16]\ncipher = data[16:]"]
-        SPLIT --> DEC["AES-CBC decrypt\n(lib cryptography)"]
-        DEC --> UNPAD["unpadder PKCS#7"]
-        UNPAD --> PLAIN["Payload déchiffré\n5E90D3CB|T:22.3,..."]
-    end
-
-    HEX -- "UART + radio" --> HEX2
 ```
 
-### 5.2 Détail du périphérique NRF_ECB
+---
 
-Le driver `nrf_ecb.c` expose une structure interne de **48 octets** directement mappée en mémoire matérielle :
+## 4. Sécurité
 
+### 4.1 Chiffrement AES-128-CBC
+
+Toutes les trames émises par l'objet sont chiffrées avec AES-128 en mode CBC, en utilisant le module matériel **NRF_ECB** intégré au nRF51. Le vecteur d'initialisation (IV) est généré aléatoirement par le générateur matériel **NRF_RNG** à chaque trame.
+
+```mermaid
+flowchart TD
+    A["Message en clair\nex: température, humidité, luminosité, pression"]
+    B["Ajout de rembourrage\npour atteindre un multiple de 16 octets"]
+    C["IV aléatoire de 16 octets\ngénéré par le matériel"]
+    D["Chiffrement bloc par bloc\nAES-128 en mode CBC"]
+    E["Assemblage\nIV + données chiffrées"]
+    F["Encodage en hexadécimal\ntransmissible par Radio et UART"]
+
+    A --> B --> D
+    C --> D
+    D --> E --> F
+
+    G["Réception côté serveur"]
+    H["Décodage hexadécimal"]
+    I["Extraction de l'IV et du message"]
+    J["Déchiffrement AES-128-CBC"]
+    K["Suppression du rembourrage"]
+    L["Message déchiffré"]
+
+    F --> G --> H --> I --> J --> K --> L
 ```
-ecb_data[0..15]  = clé AES (NRF_ECB->ECBDATAPTR pointe dessus)
-ecb_data[16..31] = cleartext → entrée
-ecb_data[32..47] = ciphertext ← sortie
-```
 
-`nrf_ecb_crypt()` écrit `TASKS_STARTECB = 1` et attend `EVENTS_ENDECB` (boucle de polling avec timeout à ~16 M cycles). Coût réel : ~6 µs par bloc sur 16 MHz.
-
-### 5.3 Dérivation de la clé
-
-```
-shared_secret = "groupe67"  (8 chars)
-AES_KEY[16]   = b"groupe67\x00\x00\x00\x00\x00\x00\x00\x00"
-```
-
-Même logique côté serveur (`derive_aes_key()` : zero-padding à 16 octets).
-
-### 5.4 Couches de sécurité complètes
+### 4.2 Couches de sécurité complètes
 
 | Couche | Mécanisme | Détail |
 |---|---|---|
-| **Radio → UART** | AES-128-CBC | IV unique par trame (NRF_RNG), PKCS#7, hex ASCII |
-| **Appairage** | `PAIR\|secret\|id` chiffré | Le serveur n'accepte que les devices connus |
-| **Passkeys** | PBKDF2-SHA256 | 200 000 itérations + sel statique |
-| **Anti-rejeu** | Timestamp Unix ±10 s | Valide sur `ADD` / `REMOVE` |
-| **Rate-limit UDP** | 50 req / 10 s / IP | Protège contre brute-force passkey |
-| **Ownership** | `user_controllers` en base | Un controller ne peut appartenir qu'à un seul utilisateur |
+| **Radio → UART** | AES-128-CBC | IV unique par trame (matériel), encodage hex |
+| **Appairage** | Message chiffré avec secret partagé | Seuls les objets connaissant le secret sont acceptés |
+| **Passkeys** | PBKDF2-SHA256 | 200 000 itérations avant stockage |
+| **Anti-rejeu** | Horodatage Unix ±10 s | Empêche la réutilisation d'anciens messages |
+| **Rate-limit UDP** | 50 requêtes / 10 s / adresse IP | Protection contre le brute-force |
+| **Ownership** | Table `user_controllers` SQLite | Un objet n'appartient qu'à un seul utilisateur |
 
 ---
 
-## 6. Objet connecté (`micro/`)
+## 5. Objet connecté (`micro/`)
 
-> [!success] Livrable ② — Code de l'objet connecté
-> Dossier : `micro/` · Documentation : `micro/README.md` · Notes TP : `micro/NOTES-TP.md`
+### 5.1 Matériel embarqué
 
-### 6.1 Pilote BME280 — lecture et compensation
+```mermaid
+graph TD
+    CPU["Processeur\nnRF51822 ARM Cortex-M0"]
+    BME["Capteur BME280\nTempérature · Humidité · Pression"]
+    OLED_H["Écran OLED SSD1306\n128×64 pixels"]
+    LED_H["Matrice LED 5×5\nutilisée comme capteur de lumière"]
+    ECB_H["Module AES matériel\nNRF_ECB"]
+    RNG_H["Générateur aléatoire matériel\nNRF_RNG"]
+    RADIO_H["Radio 2.4 GHz\ngroupe 1 · paquets 251 octets max"]
+
+    BME -- "I2C" --> CPU
+    OLED_H -- "I2C" --> CPU
+    LED_H --> CPU
+    CPU --> ECB_H
+    CPU --> RNG_H
+    RNG_H --> ECB_H
+    ECB_H --> RADIO_H
+```
+
+### 5.2 Lecture et compensation BME280
+
+Le BME280 ne fournit pas directement des degrés ou des pourcentages : il retourne des valeurs brutes (ADC) qui doivent être converties grâce à 18 coefficients de calibration (3 pour la température, 9 pour la pression, 6 pour l'humidité) lus au démarrage du capteur. Cette compensation est définie par Bosch dans la datasheet du capteur.
 
 ```mermaid
 flowchart TD
-    INIT["bme280::bme280()\nI2C addr 0xEC\noversampling ×16 pour T·H·P\nmode NORMAL · standby 62ms"] --> PROBE["probe_sensor()\nLit register chip_id 0xD0\nAttendu : 0x60"]
-    PROBE --> CAL["get_calibration_data()\n3 lectures I2C séparées :\nT[3] regs 0x88\nP[9] regs 0x8E\nH1 reg 0xA1 + H[7] regs 0xE1"]
-    CAL --> READ_LOOP
+    INIT_B["Initialisation du capteur\nConfiguration oversampling ×16"]
+    PROBE["Vérification de présence\nLecture de l'identifiant du composant"]
+    CAL["Chargement des coefficients\n18 valeurs de calibration en 4 lectures I2C"]
+    READ_B["Lecture des valeurs brutes\nTempérature · Pression · Humidité"]
+    COMP_T_B["Calcul de la température\nRetourne des centièmes de °C"]
+    COMP_H_B["Calcul de l'humidité\nDépend du résultat température"]
+    COMP_P_B["Calcul de la pression\nRetourne des Pascals → conversion hPa"]
 
-    READ_LOOP["sensor_read()\n→ 8 octets depuis reg 0xF7"] --> COMP_T["compensate_temperature(raw_T)\ntmp1 = calibration T1·T2\ntmp2 = calibration T1·T3\nfine_temp = tmp1+tmp2\n→ retourne centièmes de °C"]
-    READ_LOOP --> COMP_H["compensate_humidity(raw_H)\nutilise fine_temp\n→ retourne centièmes de %rH"]
-    READ_LOOP --> COMP_P["compensate_pressure(raw_P)\nutilise fine_temp + P1..P9\n→ retourne Pa\n÷100 → hPa"]
-
-    COMP_T --> SEND["Payload :\nT_centi/100 . (T_centi%100)/10\nH_centi/100\nP_pa/100"]
+    INIT_B --> PROBE --> CAL --> READ_B
+    READ_B --> COMP_T_B
+    READ_B --> COMP_H_B
+    READ_B --> COMP_P_B
 ```
 
-> [!note] Représentation interne
-> - Température : entier en centièmes de °C — `g_T_centi = 2230` → `22.3°C`
-> - Humidité : entier en centièmes de % — `g_H_centi = 5800` → `58%`
-> - Pression : entier en hPa — `g_P_hpa = compensate_pressure() / 100`
+Exemple : valeur interne `2230` → affichage `22.3 °C`, valeur interne `5800` → affichage `58 %`.
 
-### 6.2 Pilote SSD1306 — OLED 128×64
+### 5.3 Affichage sur l'écran OLED SSD1306
 
-```mermaid
-flowchart LR
-    subgraph RAM["Buffer GDDRAM (en mémoire micro:bit)"]
-        direction TB
-        B0["gddram[0] = SSD130x_DATA_ONLY (0x40)"]
-        B1["gddram[1..1024]\n128×8 pages de 8 bits\n= 1024 octets bitmap"]
-    end
-    subgraph API["API utilisée dans main.cpp"]
-        CLEAR["screen.clear()\nbuffer_set(gddram, 0x00)"]
-        LINE["screen.display_line(line, col, text)\npour chaque char → buffer_set_tile()\ntile = font[c - FIRST_FONT_CHAR]\n8 octets par caractère (police 8×8)"]
-        UPDATE["screen.update_screen()\ni2c->write(SSD130x_ADDR, gddram, 1025)\nenvoi du buffer complet en I2C"]
-    end
-    CLEAR --> LINE --> UPDATE --> RAM
-```
-
-La séquence d'affichage dans `main.cpp` :
-1. `screen.clear()` — efface le buffer
-2. `screen.display_line(0, 0, "OBJET CONNECTE")`
-3. `screen.display_line(1, 0, device_id)` — ex: `5E90D3CB`
-4. Lignes 3 à 7 : itère sur `g_display_order`, appelle `display_sensor_line(screen, oled_line, code)`
-5. `screen.update_screen()` — envoie les 1024 octets bitmap via I2C
-
-### 6.3 Boucle principale et listener radio
+L'écran est géré via un **buffer image de 1024 octets** maintenu en mémoire. Chaque mise à jour de l'écran envoie ce buffer complet en un seul transfert I2C, ce qui garantit un affichage sans scintillement.
 
 ```mermaid
 flowchart TD
-    BOOT["main()\nuBit.init()\nradio.setGroup(1) · radio.enable()\nnrf_ecb_init() · nrf_ecb_set_key(AES_KEY)\nInit SSD1306 + BME280\ng_device_id = hex(microbit_serial_number())"] --> PAIR["Envoi appairage\nPAIR|groupe67|5E90D3CB\n→ aes_cbc_encrypt_hex() → radio.send()"]
+    CLR["Effacement de l'écran\nRemplissage du buffer avec des zéros"]
+    LINE1["Écriture du titre\n'OBJET CONNECTE'"]
+    LINE2["Écriture de l'identifiant\nex: 5E90D3CB"]
+    LINES["Affichage des capteurs\nselon l'ordre configuré\nex: T → H → L → P"]
+    UPD["Envoi vers l'écran\nTransfert I2C du buffer complet"]
 
-    PAIR --> LOOP["── while(1) ──"]
-    LOOP --> S1["bme.sensor_read(&P, &T, &H)"]
-    S1 --> S2["g_T_centi = compensate_temperature()\ng_H_centi = compensate_humidity()\ng_P_hpa   = compensate_pressure()/100\ng_L_level = display.readLightLevel()"]
-    S2 --> S3["Construit payload\nid|T:x.x,H:x,L:x,P:x"]
-    S3 --> S4["aes_cbc_encrypt_hex(payload)\n→ random_iv() via NRF_RNG\n→ CBC sur NRF_ECB bloc par bloc\n→ hex(IV‖ciphertext)"]
-    S4 --> S5["radio.datagram.send(hex)"]
-    S5 --> S6["screen.clear()\ndisplay_line 0 : OBJET CONNECTE\ndisplay_line 1 : device_id"]
-    S6 --> S7["Parcourt g_display_order char par char\ndisplay_sensor_line(screen, line, code)\ncodes valides : T H L P"]
-    S7 --> S8["screen.update_screen()"]
-    S8 --> S9["uBit.sleep(2000 ms)"]
-    S9 --> LOOP
-
-    ISR["on_radio_receive()\n[fiber event · MICROBIT_RADIO_EVT_DATAGRAM]"] --> PARSE["Parse la trame reçue\n3 segments séparés par virgules\nseg0 = device_id ?"]
-    PARSE -- "device_id correct\nCONFIG au milieu" --> UPDATE["g_display_order = segment tail\nex: TLH"]
-    PARSE -- "device_id différent\nou format invalide" --> IGNORE["silently ignored"]
+    CLR --> LINE1 --> LINE2 --> LINES --> UPD
 ```
 
-> [!note] Modèle de concurrence
-> L'objet utilise le **scheduler fiber** du DAL micro:bit : `on_radio_receive` est enregistré sur le `messageBus`, il s'exécute entre deux instructions de la boucle principale (coopératif). Pas de mutex nécessaire — accès à `g_display_order` sérialisé par le scheduler.
+Chaque caractère occupe une tuile de 8×8 pixels issue d'une police bitmap embarquée. L'ordre des lignes (`T`, `H`, `L`, `P`) est mis à jour dynamiquement via la commande `CONFIG` reçue depuis l'application.
 
-### 6.4 Structure des fichiers
+### 5.4 Boucle principale — cycle de 2 secondes
+
+```mermaid
+flowchart TD
+    BOOT_O["Démarrage\nInit AES · Init OLED · Init BME280\nEnvoi trame d'appairage"]
+    LOOP_O["── Boucle infinie ──"]
+    S1_O["Lecture des capteurs\nT · H · P via BME280\nLuminosité via matrice LED"]
+    S2_O["Construction du message\nIdentifiant + 4 valeurs"]
+    S3_O["Chiffrement AES-128-CBC\nIV aléatoire matériel"]
+    S4_O["Émission Radio RF\nMessage chiffré en hexadécimal"]
+    S5_O["Mise à jour de l'écran OLED\nSelon l'ordre configuré"]
+    S6_O["Attente de 2 secondes"]
+    ISR_O["Réception CONFIG\n(événement asynchrone)"]
+    UPD_O["Mise à jour de l'ordre\nd'affichage OLED"]
+
+    BOOT_O --> LOOP_O --> S1_O --> S2_O --> S3_O --> S4_O --> S5_O --> S6_O --> LOOP_O
+    ISR_O --> UPD_O
+```
+
+La réception d'une commande `CONFIG` est traitée de façon asynchrone grâce au **scheduler fiber** du DAL micro:bit : l'événement s'intercale entre les étapes de la boucle principale sans bloquer les mesures.
+
+### 5.5 Structure des fichiers
 
 ```
 micro/source/
-├── main.cpp       AES-CBC · boucle capteurs · OLED · listener CONFIG
-├── bme280.cpp/.h  I2C addr 0xEC · oversampling ×16 · 13 coeffs calibration
-├── ssd1306.cpp/.h I2C addr 0x7A · 128×64 · 8 pages · police 8×8
-├── nrf_ecb.c/.h   NRF_ECB peripheral · nrf_ecb_init/set_key/crypt
-└── font.h         Police bitmap 8×8 (FIRST_FONT_CHAR = espace ASCII 0x20)
+├── main.cpp       Boucle principale · chiffrement · réception CONFIG
+├── bme280.cpp/.h  Pilote capteur T/H/P avec compensation Bosch
+├── ssd1306.cpp/.h Pilote écran OLED 128×64
+├── nrf_ecb.c/.h   Pilote module AES matériel
+└── font.h         Police bitmap 8×8 pixels
 ```
 
-### 6.5 Environnement de build
+### 5.6 Environnement de build
 
 ```bash
 # Image Docker officielle du module
@@ -340,118 +258,106 @@ docker run -it -v "$PWD:/workspaces/microbit-samples" schoumi/yotta:latest
 source /sync/Module_Dev_app_mobile/yotta/bin/activate
 yt build
 
-# Flash (Linux host)
-make install   # → cp build/.../microbit-samples-combined.hex /media/$USER/MICROBIT/
+# Flash (Linux)
+make install
+# Flash (macOS)
+cp build/bbc-microbit-classic-gcc/source/microbit-samples-combined.hex /Volumes/MICROBIT/
 ```
-
-Chaîne : `yotta` → `cmake` + `ninja` → `arm-none-eabi-gcc` → `.hex` + `srec_cat` → `-combined.hex`
 
 ---
 
-## 7. Passerelle (`gateway/microbit-samples/`)
+## 6. Passerelle (`gateway/microbit-samples/`)
 
-> [!success] Livrable ③ — Code de la passerelle
-> Dossier : `gateway/microbit-samples/` · Documentation : `gateway/microbit-samples/README.md`
+### 6.1 Principe — relais transparent
 
-### 7.1 Principe — relais transparent événementiel
-
-La passerelle ne contient **aucune logique métier**. Le `main()` se termine par `release_fiber()` qui endort la tâche principale mais laisse le **système d'événements** du DAL tourner indéfiniment.
+La passerelle ne contient **aucune logique métier**. Son seul rôle est de faire suivre les messages dans les deux sens, sans les modifier. Elle est construite avec les mêmes outils que l'objet (yotta, micro:bit DAL) et repose sur deux gestionnaires d'événements enregistrés au démarrage. Le programme principal se termine immédiatement par `release_fiber()` qui passe la main au scheduler d'événements du DAL, lequel reste actif indéfiniment.
 
 ```mermaid
-flowchart LR
-    subgraph GW["Passerelle (main.cpp — ~50 lignes)"]
-        INIT2["main()\nuBit.init()\nradio.enable() · radio.setGroup(1)\nserial.baud(115200)\nserial.eventOn('\\n')\nrelease_fiber()"]
+flowchart TD
+    INIT_G["Démarrage\nConfig Radio groupe 1\nConfig UART 115200 bauds\nAttente d'événements"]
 
-        EV1["onRadioReceive()\nMicroBitEvent MICROBIT_RADIO_EVT_DATAGRAM\n→ msg = radio.datagram.recv()\n→ serial.send(msg)\n→ serial.send('\\n')"]
+    EV1_G["Réception Radio\nMet le message sur le câble UART"]
 
-        EV2["onSerialReceive()\nMicroBitEvent MICROBIT_SERIAL_EVT_DELIM_MATCH\n→ msg = serial.readUntil('\\n', ASYNC)\n→ radio.datagram.send(msg)"]
+    EV2_G["Réception UART\nRetransmet le message par Radio"]
 
-        INIT2 --> EV1
-        INIT2 --> EV2
-    end
+    OBJ_G["Objet connecté"] -- "Message chiffré\nRadio RF" --> EV1_G
+    EV1_G -- "Même message\nUART" --> SRV_G["Serveur Python"]
+    SRV_G -- "Commande CONFIG\nUART" --> EV2_G
+    EV2_G -- "Même commande\nRadio RF" --> OBJ_G
 
-    OBJ2["Objet\n(radio)"] -- "hex chiffré" --> EV1
-    EV1 -- "même hex + \\n\nUART" --> SRV2["Serveur"]
-    SRV2 -- "CONFIG + \\n\nUART" --> EV2
-    EV2 -- "CONFIG" --> OBJ2
+    INIT_G --> EV1_G
+    INIT_G --> EV2_G
 ```
 
-> [!note] `release_fiber()` vs `while(1)`
-> Contrairement à `return 0` qui arrêterait l'exécution, `release_fiber()` libère le fiber du `main()` et laisse le scheduler DAL gérer les deux listeners. Pas de busy-wait, pas de polling.
+### 6.2 Configuration
 
-### 7.2 Configuration détaillée
+| Paramètre | Valeur | Raison |
+|---|---|---|
+| Bluetooth | Désactivé | Libère la radio pour le mode datagramme |
+| Taille max paquet radio | 251 octets | Accueille un message chiffré en hexadécimal |
+| Groupe radio | 1 | Identique à l'objet connecté |
+| Débit UART | 115 200 bauds | Correspond à la config du serveur |
+| Délimiteur | `\n` | Sépare les trames côté Python |
 
-```
-config.json (gateway/microbit-samples/)
-├── bluetooth.enabled = 0      → libère la pile radio pour le mode datagram brut
-└── radio_max_packet_size = 251 → accueille hex(IV 16o + payload ~48o) = ~128 chars hex
-
-source/main.cpp
-├── radio.setGroup(1)           → identique à l'objet (groupe alloué à l'équipe)
-├── serial.baud(115200)         → doit correspondre à --baudrate du serveur
-└── serial.eventOn("\n")        → déclenche onSerialReceive à chaque ligne complète
-```
-
-### 7.3 Build et flash
+### 6.3 Build et flash
 
 ```bash
-# Depuis gateway/microbit-samples/
 source /sync/Module_Dev_app_mobile/yotta/bin/activate
-make build    # yt build
-
-make install  # copie le .hex sur /media/$USER/MICROBIT/
-# ou :
-./flash.sh    # cp build/.../microbit-samples-combined.hex /media/arnaud-dec/MICROBIT/
+make build      # yt build
+make install    # copie le .hex vers /media/$USER/MICROBIT/
 ```
 
 ---
 
-## 8. Serveur (`server/`)
+## 7. Serveur (`server/`)
 
-> [!success] Livrable ④ — Application côté serveur
-> Dossier : `server/` · Documentation : `server/README.md`
-> Dépendances : `pyserial` · `cryptography` · `bcrypt` (3 libs Python seulement)
+Dépendances Python : `pyserial` · `cryptography` · `bcrypt` (3 bibliothèques seulement).
 
-### 8.1 Architecture en couches (Domain-Driven Design)
+### 7.1 Architecture en couches
+
+Le serveur est organisé en 4 couches indépendantes selon le principe de séparation des responsabilités (Domain-Driven Design). Chaque couche ne connaît que la couche en dessous d'elle.
 
 ```mermaid
 graph TD
-    subgraph INFRA["infrastructure/ — I/O (threads)"]
-        UART_PY["SerialServer(Thread)\n· _looks_hex() → décrypte AES\n· parse_pairing() → handshake\n· decode_pipe_payload() → id|T:x,...\n· decode_json_batch() → JSON\n· decode() → CSV legacy\n· send_command() → UART out"]
-        UDP_PY["UDPServer(ThreadingMixIn)\n· is_rate_limited() 50req/10s/IP\n· ThreadedUDPServer"]
+    subgraph INFRA2["infrastructure/"]
+        S1["Lecture UART\n(thread dédié)"]
+        S2["Serveur UDP\n(port 10000)"]
     end
 
-    subgraph PROTO["protocol/"]
-        CODEC_PY["ProtocolCodec (static methods)\n· decrypt_aes_cbc_hex(hex, key)\n· encrypt_aes_cbc_hex(plain, key, iv)\n· decode_pipe_payload(raw)\n· decode_json_sensor_batch(raw, default_id)\n· decode(raw) → AppEvent\n· parse_pairing(raw)\n· encode_config(config)"]
-        EVENTS_PY["AppEvent (frozen dataclasses)\nRegisterUserEvent · AddControllerEvent\nRemoveControllerEvent · ListControllersEvent\nDataRequestEvent · HistoryRequestEvent\nConfigCommandEvent\nSensorReadingEvent · SensorSnapshotEvent"]
+    subgraph PROTO2["protocol/"]
+        S3["Décodage des messages\n(tous formats)"]
     end
 
-    subgraph CORE_PY["core/ — logique métier"]
-        SVC_PY["ServerService\n· handle_event(event) → match\n· _handle_sensor_snapshot() + throttle 10s\n· _handle_config_command() → broadcast\n· _handle_register_user() → PBKDF2\n· _handle_add/remove_controller()\n· _handle_data/history_request()\n· _is_timestamp_valid() ±10s"]
-        MODELS_PY["Models (frozen dataclasses)\nSensorReading · SensorSnapshot\nConfigCommand · User"]
+    subgraph CORE2["core/"]
+        S5["Logique métier\n(throttle, validation, ownership)"]
     end
 
-    subgraph DATA_PY["data/ — persistance"]
-        REPO_PY["IoTRepository\n· insert_snapshot() / insert_reading()\n· get_latest_readings_for_user/controller()\n· get_daily_aggregates_for_controller()\n· register_user() · is_user_valid()\n· add/remove_user_controller()\n· user_owns_controller()\n· hash_passkey() — PBKDF2+sel"]
-        DB_PY["Database\n· PRAGMA foreign_keys=ON\n· PRAGMA journal_mode=WAL\n· migration legacy schema auto\n· index (controller_id, timestamp DESC)"]
+    subgraph DATA2["data/"]
+        S7["Accès base de données"]
+        S8[("SQLite")]
     end
 
-    UART_PY --> CODEC_PY
-    UDP_PY --> CODEC_PY
-    CODEC_PY --> EVENTS_PY
-    EVENTS_PY --> SVC_PY
-    SVC_PY --> MODELS_PY
-    SVC_PY --> REPO_PY
-    REPO_PY --> DB_PY
-    SVC_PY -- "command_sender callback" --> UART_PY
+    S1 --> S3
+    S2 --> S3
+    S3 --> S5
+    S5 --> S7
+    S7 --> S8
+    S5 -- "Envoi commande" --> S1
 ```
 
-### 8.2 Schéma relationnel SQLite
+**Responsabilités de chaque couche :**
+
+- `infrastructure/` — Lecture UART avec déchiffrement AES et retransmission vers l'objet. Serveur UDP avec rate-limit (50 req/10s/IP).
+- `protocol/` — Détecte et décode les 4 formats acceptés (hex chiffré, pipe, JSON, CSV) et encode les réponses.
+- `core/` — Logique métier : throttle 10s (une insertion par contrôleur toutes les 10 secondes), validation horodatage ±10s, vérification d'ownership.
+- `data/` — Toutes les requêtes SQL, migration automatique de l'ancien schéma, connection SQLite en mode WAL.
+
+### 7.2 Schéma relationnel SQLite
 
 ```mermaid
 erDiagram
     users {
-        TEXT passkey_hash PK "PBKDF2-SHA256 + sel"
+        TEXT passkey_hash PK
         DATETIME created_at
     }
     user_controllers {
@@ -459,17 +365,17 @@ erDiagram
         TEXT controller_id PK
     }
     readings {
-        INTEGER id PK "AUTOINCREMENT"
+        INTEGER id PK
         TEXT controller_id
-        REAL temperature "NULL si absent"
-        REAL humidity    "NULL si absent"
-        REAL luminosity  "NULL si absent"
-        REAL pressure    "NULL si absent"
+        REAL temperature
+        REAL humidity
+        REAL luminosity
+        REAL pressure
         DATETIME timestamp
     }
     configurations {
         TEXT controller_id PK
-        TEXT display_order "ex: TLH"
+        TEXT display_order
         DATETIME timestamp
     }
 
@@ -478,45 +384,44 @@ erDiagram
     user_controllers }o--o| configurations : "controller_id"
 ```
 
-> [!note] Migration automatique
-> `database.py` détecte l'ancien schéma (colonne `sensor_id`) au démarrage et pivote les données en snapshots multi-capteurs sans perte. La migration vers `user_controllers` (depuis l'ancien `user_sensors`) est aussi automatique.
+Un index sur `(controller_id, timestamp DESC)` dans `readings` accélère les requêtes de consultation et d'historique.
 
-### 8.3 Dispatch d'une ligne série
+### 7.3 Traitement d'un message serie
 
 ```mermaid
 flowchart TD
-    RAW["raw_line reçu de l'UART"] --> ISHEX{"_looks_hex() ?\nlongueur paire + chars 0-9A-F"}
-    ISHEX -- oui --> DECRYPT["ProtocolCodec.decrypt_aes_cbc_hex()\nbytes.fromhex · iv=data[:16]\nAES-CBC décrypte · unpadder PKCS#7"]
-    DECRYPT --> DECOK{"Déchiffrement OK ?"}
-    DECOK -- non --> WARN["log warning — ignoré"]
-    DECOK -- oui --> RAW2["raw_line = plaintext"]
-    ISHEX -- non --> RAW2
+    RAW2["Ligne reçue sur UART"]
+    HEX2{"Format hexadécimal ?"}
+    DEC2["Déchiffrement AES-128"]
+    PAIR2{"Message d'appairage ?"}
+    OK2{"Secret valide ?"}
+    TRUST2["Objet ajouté comme de confiance"]
+    PIPE2{"Format pipe — id|T:x,H:x ?"}
+    JSON2{"Format JSON ?"}
+    CSV2["Format CSV — ctrl,capteur,valeur"]
+    SVC2["Traitement par le service"]
+    THR2{"Dernier envoi < 10s ?"}
+    DB2["Enregistrement en base"]
 
-    RAW2 --> PAIR{"parse_pairing() ?\nstartswith PAIR|"}
-    PAIR -- oui --> SECRET{"secret == shared_secret ?"}
-    SECRET -- oui --> TRUST["paired_devices.add(device_id)\nlog: Pairing OK"]
-    SECRET -- non --> REJECT["log warning rejected"]
-    PAIR -- non --> PIPE{"'|' ET ':'\ndans la ligne ?"}
-
-    PIPE -- oui --> PIPE_DEC["decode_pipe_payload()\nid|T:x.x,H:x,L:x,P:x\n→ SensorSnapshotEvent"]
-    PIPE_DEC --> SVC_EV["service.handle_event()"]
-
-    PIPE -- non --> JSON_CHK{"startswith('{') ?"}
-    JSON_CHK -- oui --> JSON_DEC["decode_json_sensor_batch()\n{T:x, H:x, id:x}\n→ SensorSnapshotEvent"]
-    JSON_DEC --> SVC_EV
-
-    JSON_CHK -- non --> CSV_DEC["ProtocolCodec.decode()\nctrl,sensor,value (CSV legacy)\n→ SensorReadingEvent / autre"]
-    CSV_DEC --> SVC_EV
-
-    SVC_EV --> THROTTLE{"(si SensorSnapshot)\nnow - last < 10s ?"}
-    THROTTLE -- oui --> DROP["snapshot throttled — ignoré"]
-    THROTTLE -- non --> INSERT["repository.insert_snapshot()\nINSERT INTO readings ..."]
+    RAW2 --> HEX2
+    HEX2 -- oui --> DEC2 --> PAIR2
+    HEX2 -- non --> PAIR2
+    PAIR2 -- oui --> OK2
+    OK2 -- oui --> TRUST2
+    OK2 -- non --> IGN2["Ignoré"]
+    PAIR2 -- non --> PIPE2
+    PIPE2 -- oui --> SVC2
+    PIPE2 -- non --> JSON2
+    JSON2 -- oui --> SVC2
+    JSON2 -- non --> CSV2 --> SVC2
+    SVC2 --> THR2
+    THR2 -- oui --> DROP2["Throttlé — ignoré"]
+    THR2 -- non --> DB2
 ```
 
-### 8.4 Réponse GET et HISTORY
+### 7.4 Format des réponses
 
-**GET** — retourne les dernières valeurs "explosées" en lignes `(ctrl, sensor_id, value)` :
-
+**GET** — une ligne par capteur disponible :
 ```
 5E90D3CB,T,22.3
 5E90D3CB,H,58.0
@@ -524,197 +429,153 @@ flowchart TD
 5E90D3CB,P,1012.0
 ```
 
-**HISTORY** — agrégats journaliers (14 colonnes) :
-
+**HISTORY** — 14 colonnes par jour (moyenne/min/max pour T, H, L, P + nombre de mesures) :
 ```
-day,t_avg,t_min,t_max,h_avg,h_min,h_max,l_avg,l_min,l_max,p_avg,p_min,p_max,samples
 2026-05-19,22.50,20.10,24.80,57.20,52.00,63.00,,,,1011.30,1008.00,1015.00,12
 ```
 
-Champs absents (ex: luminosité non reçue) → colonne vide.
-
-### 8.5 Lancement
+### 7.5 Lancement
 
 ```bash
 cd server
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt   # pyserial · cryptography · bcrypt
+pip install -r requirements.txt
 
 # Linux
 python main.py --serial_port /dev/ttyACM0 --shared-secret groupe67
 # Windows
 python main.py --serial_port COM3 --shared-secret groupe67
-# Options supplémentaires
-python main.py --serial-retry 5 --debug --udp_port 10000
+# Le secret doit rester identique a SHARED_SECRET dans micro/source/main.cpp.
+# Options supplémentaires : --serial-retry 5 --debug --udp_port 10000
 ```
 
-### 8.6 Tests automatisés — 57 tests
+### 7.6 Tests automatisés — 57 tests
+
+Le serveur dispose d'une suite de tests complète qui valide chaque couche indépendamment. Ces tests permettent de détecter rapidement les régressions et de garantir la fiabilité du comportement global.
 
 ```mermaid
-pie title 57 tests — répartition par couche
-    "Unit — Codec & AES (test_protocol.py)" : 22
-    "Unit — Repository SQL (test_repository.py)" : 14
-    "Integration — Service (test_service.py)" : 15
-    "Infrastructure — UDP (test_udp_server.py)" : 3
-    "E2E — Cycle complet (test_system_flow.py)" : 3
+pie title Répartition des 57 tests
+    "Tests unitaires — Protocole et AES" : 30
+    "Tests unitaires — Base de données" : 11
+    "Tests intégration — Service métier" : 13
+    "Tests infrastructure — UDP" : 2
+    "Tests bout en bout — Cycle complet" : 1
 ```
+
+Les cas couverts incluent notamment : le chiffrement/déchiffrement AES avec vecteur fixe, le parsing de tous les formats, le throttle 10s, les agrégats journaliers, les scénarios multi-utilisateurs, la purge des données lors d'un `REMOVE`, le rate-limit UDP et la validation des horodatages.
 
 ```bash
 python -m unittest discover tests   # ~2 secondes, 0 erreur
 ```
 
-Cas couverts : round-trip AES, parsing pipe/JSON/CSV, throttling 10s, agrégats journaliers, multi-utilisateurs, purge sur REMOVE, rate-limit UDP, validation timestamp, vecteur CBC déterministe.
-
 ---
 
-## 9. Application Android (`application/`)
+## 8. Application Android (`application/`)
 
-> [!success] Livrable ① — Application Android
-> Dossier : `application/` · Documentation : `application/README.md`
-> APK : `bureau-bien-etre.apk` · `minSdk` 31 (Android 12+) · `targetSdk` 36
+`minSdk` 31 (Android 12+) · `targetSdk` 36 · Java · Material 3
 
-### 9.1 Architecture
+### 8.1 Structure du code
 
-```mermaid
-graph TD
-    subgraph ANDROID["App Android — com.example.bureaubientre"]
-        MA2["MainActivity\nActivity unique (single Activity)\nSharedPreferences 'server_config'\nIP · port · passkey · controller sélectionné"]
-
-        subgraph UI_CARDS["5 MaterialCardView"]
-            C1["① Config serveur\nIP · port · passkey (avec confirmation)\nbouton Connecter → INIT UDP"]
-            C2["② Micro:bit associés\nSpinner controllers\nADD · REMOVE · REFRESH"]
-            C3["③ Ordre OLED\nSpinner T·H·L·P → Ajouter\ntextDisplayOrder · Envoyer · Reset"]
-            C4["④ Données capteurs\n4 tuiles colorées\nT(orange)·H(bleu)·L(jaune)·P(vert)\nbouton Rafraîchir → GET UDP"]
-            C5["⑤ Historique\nbouton Charger → HISTORY UDP\nSpinner filtre tout·T·H·L·P\nScrollView monospace"]
-        end
-
-        UC2["UdpClient\nsend() — fire & forget\nsendAndReceive() — timeout 5s\nThread dédié → Handler mainLooper"]
-        SD2["SensorData\nparseMultiline(response)\nT·H·L·P Float (NaN si absent)\nformatTemperature/Humidity/…"]
-        PREFS2["SharedPreferences\nIP · port · passkey\ncontroller sélectionné"]
-
-        MA2 --> C1
-        MA2 --> C2
-        MA2 --> C3
-        MA2 --> C4
-        MA2 --> C5
-        MA2 --> UC2
-        MA2 --> SD2
-        MA2 --> PREFS2
-    end
+```
+app/src/main/java/com/example/bureaubientre/
+├── MainActivity.java   Activité unique — UI, état, appels réseau
+├── UdpClient.java      Envoi simple ou envoi + attente réponse (timeout 5s)
+└── SensorData.java     Parsing des données capteurs · NaN si absent
 ```
 
-### 9.2 Cycle de vie d'une requête UDP
-
-```mermaid
-sequenceDiagram
-    participant UI as Thread UI (MainActivity)
-    participant UDP as UdpClient (Thread dédié)
-    participant SRV3 as Serveur Python
-
-    UI->>UDP: sendAndReceive("GET,passkey,5E90D3CB", callback)
-    Note over UDP: new Thread() { DatagramSocket socket }
-    UDP->>SRV3: UDP datagram
-    SRV3-->>UDP: réponse dans 4096 octets max
-    Note over UDP: socket.setSoTimeout(5000ms)
-    alt Réponse reçue
-        UDP->>UI: mainHandler.post(callback.onDataReceived(response))
-        UI->>UI: SensorData.parseMultiline(response)
-        UI->>UI: Met à jour textTemperature, textHumidity...
-    else Timeout 5s
-        UDP->>UI: mainHandler.post(callback.onError("Timeout"))
-    end
-```
-
-### 9.3 Parsing de la réponse `GET`
-
-`SensorData.parseMultiline()` accepte toutes les variantes de noms de capteurs :
-
-| Codes acceptés | Capteur |
-|---|---|
-| `T`, `TEMP`, `TEMPERATURE` | Température |
-| `H`, `HUM`, `HUMIDITY`, `HUMIDITE` | Humidité |
-| `L`, `LUM`, `LUMINOSITY`, `LUMINOSITE` | Luminosité |
-| `P`, `PRES`, `PRESSURE`, `PRESSION` | Pression |
-
-Les valeurs absentes restent `Float.NaN` et s'affichent `--` via les méthodes `format*()`.
-
-### 9.4 Construction de l'ordre OLED
+### 8.2 Interface utilisateur — 5 sections Material3
 
 ```mermaid
 flowchart TD
-    START2["initSensorCatalog()\nLinkedHashMap T→Température\nH→Humidité · L→Luminosité · P→Pression"] --> SPINNER2["Spinner bindé\nà sensorLabelList"]
-    SPINNER2 --> ADD2["buttonAddToOrder.onClick()\nletterFor(selectedLabel)\ndisplayOrder.indexOf(letter) >= 0 ? skip\ndisplayOrder.append(letter)"]
-    ADD2 --> DISPLAY2["textDisplayOrder.setText()\nTemperature → Humidité → ..."]
-    DISPLAY2 --> SEND2["buttonSendOrder.onClick()\nudpClient.send(id + ',CONFIG,' + displayOrder)"]
+    APP_A["Application Android\n(écran unique à défilement)"]
+
+    C1_A["① Configuration serveur\nIP · port · passkey"]
+    C2_A["② Micro:bit associés\nAjouter · Supprimer · Lister"]
+    C3_A["③ Ordre OLED\nChoisir et ordonner T · H · L · P"]
+    C4_A["④ Données en direct\nAffichage des 4 capteurs"]
+    C5_A["⑤ Historique\nMoyenne · min · max par jour"]
+
+    APP_A --> C1_A
+    APP_A --> C2_A
+    APP_A --> C3_A
+    APP_A --> C4_A
+    APP_A --> C5_A
 ```
 
-> [!warning] Réseau
-> Le smartphone et le PC doivent être sur le **même réseau WiFi**. L'IP du PC (pas `localhost`) doit être saisie dans la section Config. La configuration est persistée en `SharedPreferences` entre les sessions.
+### 8.3 Protocole UDP côté Android
 
-### 9.5 Build et installation
+| Commande envoyée | Réponse serveur |
+|---|---|
+| `INIT,<passkey>` | `OK` |
+| `LIST,<passkey>` | `ctrl1\nctrl2\n…` |
+| `ADD,<passkey>,<id>` | `OK` / `UNAUTHORIZED` |
+| `REMOVE,<passkey>,<id>` | `OK` / `ERROR` |
+| `GET,<passkey>,<id>` | `ctrl,T,22.3\nctrl,H,58\n…` |
+| `HISTORY,<passkey>,<id>,7` | CSV agrégé (14 colonnes/jour) |
+| `<id>,CONFIG,TLH` | *(transmis vers l'objet via le serveur)* |
+
+Chaque appel réseau est exécuté sur un thread dédié. Les résultats reviennent sur le thread principal via un Handler, conformément aux bonnes pratiques Android.
+
+### 8.4 Construction de l'ordre OLED
+
+```mermaid
+flowchart TD
+    SP_A["Sélection dans la liste\nT · H · L · P"]
+    ADD_A["Bouton Ajouter\nAjout à la séquence\n(les doublons sont ignorés)"]
+    TXT_A["Aperçu textuel\nex: Température → Luminosité → Humidité"]
+    SEND_A["Bouton Envoyer\nCommande envoyée au serveur puis à l'objet"]
+
+    SP_A --> ADD_A --> TXT_A --> SEND_A
+```
+
+### 8.5 Build et installation
 
 ```bash
 cd application
 ./gradlew assembleDebug
 # APK → app/build/outputs/apk/debug/app-debug.apk
 
-# Installation directe
 adb install app/build/outputs/apk/debug/app-debug.apk
-# ou depuis l'IDE : Run → installDebug
 ```
+
+Le smartphone et le PC doivent être sur le **même réseau WiFi**. Saisir l'**adresse IP du PC** (pas `localhost`) dans l'écran de configuration. La configuration est persistée automatiquement entre les sessions.
 
 ---
 
-## 10. État d'avancement
+## 9. État d'avancement
 
 | Fonctionnalité | État | Détail |
 |---|---|---|
 | Protocole objet ⇄ passerelle bidirectionnel | ✅ | Radio + UART, event-driven |
 | Chiffrement AES-128-CBC + appairage | ✅ | NRF_ECB matériel, IV NRF_RNG |
-| Gestion multi-objets | ✅ | `user_controllers` + device_id matériel |
-| Capteurs T / H / P | ✅ | BME280, oversampling ×16 |
-| Capteur luminosité L | ✅ | Matrice LED comme photodiode |
+| Gestion multi-objets | ✅ | Ownership par utilisateur |
+| Capteurs T / H / P (BME280) | ✅ | Oversampling ×16, compensation Bosch |
+| Capteur luminosité L | ✅ | Matrice LED utilisée comme photodiode |
 | Affichage OLED dans l'ordre demandé | ✅ | Tous les cas T/H/L/P gérés |
-| Passerelle relais radio ⇄ UART | ✅ | ~50 lignes, `release_fiber()` |
-| Serveur UDP + SQLite + getValues() | ✅ | Throttle 10s, WAL mode |
-| Format d'échange défini | ✅ | Pipe + JSON + CSV acceptés |
-| App Android — config · CRUD · ordre · data · historique | ✅ | 5 sections Material3 |
-| Sécurité passkeys PBKDF2 + rate-limit | ✅ | 200 000 itérations |
-| 57 tests automatisés | ✅ | Unit + intégration + E2E |
+| Passerelle relais radio ⇄ UART | ✅ | ~50 lignes, entièrement événementiel |
+| Serveur UDP + SQLite | ✅ | Throttle 10s, mode WAL |
+| Formats d'échange (pipe / JSON / CSV) | ✅ | Tous acceptés |
+| App Android (config, ordre, données, historique) | ✅ | 5 sections Material3 |
+| Sécurité passkeys PBKDF2 + rate-limit UDP | ✅ | 200 000 itérations |
+| 57 tests automatisés | ✅ | Unitaires + intégration + bout en bout |
 | Interface web type Grafana | ❌ | Optionnel — non réalisé |
-| Push automatique serveur → app | ❌ | Optionnel — rafraîchissement à la demande |
+| Push automatique serveur → app | ❌ | Optionnel — l'app rafraîchit à la demande |
 
-> [!success] Toutes les exigences **obligatoires** de l'énoncé sont couvertes.
+Toutes les exigences **obligatoires** de l'énoncé sont couvertes.
 
 ---
 
-## 11. Choix technologiques
+## 10. Choix technologiques
 
 | Brique | Choix | Justification |
 |---|---|---|
-| Objet / Passerelle | C/C++, micro:bit DAL, yotta | Accès direct NRF_ECB et NRF_RNG — impossible depuis MicroPython |
-| Chiffrement | AES-128-CBC matériel (NRF_ECB) | Sécurité réelle, ~6 µs/bloc, pas de lib logicielle |
-| IV | NRF_RNG (entropie matérielle) | Garantit l'imprévisibilité, pas de PRNG logiciel |
-| Dérivation de clé | Zero-padding 16 octets | Simple à reproduire en compile-time sur le micro:bit |
-| Serveur | Python 3 | Référence fournie dans l'énoncé, 3 dépendances seulement |
+| Objet / Passerelle | C/C++, micro:bit DAL, yotta | Accès direct aux modules AES et RNG matériels — impossible depuis MicroPython |
+| Chiffrement | AES-128-CBC matériel (NRF_ECB) | Sécurité réelle, quelques µs par bloc, sans bibliothèque logicielle |
+| IV | NRF_RNG (entropie matérielle) | Imprévisibilité garantie par le matériel |
+| Serveur | Python 3 | Référence fournie, 3 dépendances seulement |
 | Base de données | SQLite WAL | Sans serveur, fichier unique, agrégats SQL natifs |
-| Passkeys | PBKDF2-SHA256 200k itér. | Standard industrie, résistance brute-force hors-ligne |
+| Passkeys | PBKDF2-SHA256 200k itér. | Standard industrie, résistance brute-force |
 | Architecture serveur | DDD 4 couches | Testabilité par couche, séparation des responsabilités |
-| Format radio → UART | Hex ASCII | Transmissible sur UART sans encodage supplémentaire |
-| Application | Android natif Java | Contrôle fin des sockets UDP, pas de dépendance tierce |
+| Format radio → UART | Hexadécimal ASCII | Transmissible sur UART sans encodage supplémentaire |
+| Application | Android natif Java | Contrôle fin des sockets UDP, zéro dépendance tierce |
 | Transport app | UDP | Imposé par l'énoncé |
-
----
-
-## 12. Livrables du rendu
-
-| # | Livrable | Emplacement | Documentation |
-|---|---|---|---|
-| 1 | **Rapport synthétique** | `rendu.md` (ce document) | — |
-| 2 | **Application Android** | `application/` | `application/README.md` |
-| 3 | **Code de l'objet connecté** | `micro/` | `micro/README.md` · `micro/NOTES-TP.md` |
-| 4 | **Code de la passerelle** | `gateway/microbit-samples/` | `gateway/microbit-samples/README.md` |
-| 5 | **Application côté serveur** | `server/` | `server/README.md` |
-
-> [!note] APK de démonstration
-> L'APK de debug `bureau-bien-etre.apk` est disponible dans `application/` pour installation directe sans compilation (`adb install`).

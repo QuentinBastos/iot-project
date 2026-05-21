@@ -123,7 +123,7 @@ flowchart TD
 | **Radio → UART** | AES-128-CBC | IV unique par trame (matériel), encodage hex |
 | **Appairage** | Message chiffré avec secret partagé | Seuls les objets connaissant le secret sont acceptés |
 | **Passkeys** | PBKDF2-SHA256 | 200 000 itérations avant stockage |
-| **Anti-rejeu** | Horodatage Unix ±10 s | Empêche la réutilisation d'anciens messages |
+| **Anti-rejeu** *(optionnel)* | Horodatage Unix ±10 s | Mécanisme disponible côté serveur mais non activé par défaut (aucun client n'envoie d'horodatage) |
 | **Rate-limit UDP** | 50 requêtes / 10 s / adresse IP | Protection contre le brute-force |
 | **Ownership** | Table `user_controllers` SQLite | Un objet n'appartient qu'à un seul utilisateur |
 
@@ -229,7 +229,7 @@ Build et flash : voir `gateway/microbit-samples/README.md`.
 
 ## 7. Serveur (`server/`)
 
-Dépendances : `pyserial` · `cryptography` · `bcrypt` (3 bibliothèques). Architecture en 4 couches indépendantes (Domain-Driven Design) : chaque couche ne connaît que celle en dessous.
+Dépendances : `pyserial` · `cryptography` (2 bibliothèques). Architecture en 4 couches indépendantes (Domain-Driven Design) : chaque couche ne connaît que celle en dessous.
 
 ```mermaid
 graph TD
@@ -261,7 +261,7 @@ graph TD
 
 - `infrastructure/` — Lecture UART (déchiffrement AES, retransmission vers l'objet) et serveur UDP avec rate-limit.
 - `protocol/` — Détecte et décode les formats (hex chiffré, pipe, JSON, CSV) et encode les réponses.
-- `core/` — Throttle 10s (une insertion par contrôleur / 10s), validation horodatage ±10s, ownership.
+- `core/` — Throttle 10s (une insertion par contrôleur / 10s), validation d'horodatage optionnelle (±10s), ownership.
 - `data/` — Requêtes SQL, migration automatique de schéma, connexion SQLite en mode WAL.
 
 ### 7.1 Schéma relationnel SQLite
@@ -327,7 +327,7 @@ La donnée passe ensuite par le throttle 10s avant insertion.
 
 ### 7.4 Tests automatisés
 
-**57 tests** couvrent chaque couche : 30 unitaires (protocole + AES), 11 unitaires (base de données), 13 d'intégration (service métier), 2 d'infrastructure (UDP) et 1 bout-en-bout (cycle complet). Cas couverts : round-trip AES, parsing de tous les formats, throttle 10s, agrégats journaliers, multi-utilisateurs, purge sur REMOVE, rate-limit UDP, validation des horodatages. Lancement : `python -m unittest discover tests` (~2 s, 0 erreur).
+**56 tests** couvrent chaque couche : 40 unitaires (protocole/AES + base de données), 13 d'intégration (service métier), 2 d'infrastructure (UDP) et 1 bout-en-bout (cycle complet). Cas couverts : round-trip AES, parsing de tous les formats, throttle 10s, agrégats journaliers, multi-utilisateurs, purge sur REMOVE, rate-limit UDP, validation d'horodatage (mécanisme optionnel). Lancement : `python -m unittest discover tests` (~2 s, 0 erreur).
 
 Lancement du serveur et options : voir `server/README.md`. Le `--shared-secret` doit rester identique à `SHARED_SECRET` dans `micro/source/main.cpp`.
 
@@ -395,7 +395,7 @@ Build et installation : voir `application/README.md`.
 | Formats d'échange (pipe / JSON / CSV) | ✅ |
 | App Android (config, ordre, données, historique) | ✅ |
 | Sécurité passkeys PBKDF2 + rate-limit UDP | ✅ |
-| 57 tests automatisés | ✅ |
+| 56 tests automatisés | ✅ |
 | Interface web type Grafana | ❌ optionnel |
 | Push automatique serveur → app (l'app rafraîchit à la demande) | ❌ optionnel |
 

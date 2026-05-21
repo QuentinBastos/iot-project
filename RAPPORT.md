@@ -141,7 +141,7 @@ graph TD
     LED_H["Matrice LED 5×5\nutilisée comme capteur de lumière"]
     ECB_H["Module AES matériel\nNRF_ECB"]
     RNG_H["Générateur aléatoire matériel\nNRF_RNG"]
-    RADIO_H["Radio 2.4 GHz\ngroupe 1 · paquets 251 octets max"]
+    RADIO_H["Radio 2.4 GHz\ngroupe 1"]
 
     BME -- "I2C" --> CPU
     OLED_H -- "I2C" --> CPU
@@ -170,14 +170,14 @@ flowchart TD
     S4_O["Émission Radio RF"]
     S5_O["Mise à jour OLED\nselon l'ordre configuré"]
     S6_O["Attente de 2 secondes"]
-    ISR_O["Réception CONFIG\n(événement asynchrone)"]
+    ISR_O["Réception CONFIG\n(entre deux cycles)"]
     UPD_O["Mise à jour de l'ordre d'affichage"]
 
     BOOT_O --> LOOP_O --> S1_O --> S2_O --> S3_O --> S4_O --> S5_O --> S6_O --> LOOP_O
     ISR_O --> UPD_O
 ```
 
-La réception d'une commande `CONFIG` est traitée de façon asynchrone grâce au **scheduler fiber** du DAL micro:bit : l'événement s'intercale entre les étapes de la boucle sans bloquer les mesures.
+La réception d'une commande `CONFIG` est gérée par le **scheduler fiber** du DAL micro:bit : listener radio et boucle principale partagent le même fiber, sérialisés entre deux `yield`. L'événement s'intercale donc entre les étapes de la boucle (pendant le `sleep`), sans verrou nécessaire et sans bloquer les mesures. Au démarrage, l'ordre d'affichage est initialisé à `"T"` (seule la température s'affiche) jusqu'à réception du premier `CONFIG`.
 
 ### 5.4 Structure des fichiers
 

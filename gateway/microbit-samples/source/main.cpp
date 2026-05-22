@@ -57,13 +57,16 @@ int main()
     // 1. Configuration de la Radio (RF 2.4GHz)
     uBit.radio.enable();
     // ATTENTION : L'objet connecté et la passerelle doivent être sur le même groupe radio !
-    // Groupe 67 = groupe alloué à notre équipe
     uBit.radio.setGroup(1);
 
     // 2. Configuration de la communication série (UART via USB)
     uBit.serial.baud(115200);
+    // Buffer RX agrandi : la commande CONFIG (descendante) ne doit pas être
+    // perdue si elle arrive pendant l'envoi (TX) d'une trame capteur chiffrée
+    // (~80 caractères). Le buffer par défaut (~20 o) déborde sinon.
+    uBit.serial.setRxBufferSize(128);
     // On indique à la carte de déclencher un événement à chaque fois qu'elle reçoit un '\n'
-    uBit.serial.eventOn("\n"); 
+    uBit.serial.eventOn("\n");
 
     // 3. Enregistrement de nos écouteurs d'événements (qui remplacent tes threads)
     uBit.messageBus.listen(MICROBIT_ID_RADIO, MICROBIT_RADIO_EVT_DATAGRAM, onRadioReceive);
